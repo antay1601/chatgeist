@@ -1,0 +1,12 @@
+[project]
+name = "chatgeist"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.22.0",
+    "aiosqlite>=0.21.0",
+    "anthropic>=0.72.1",
+    "python-dotenv>=1.2.1",
+]
