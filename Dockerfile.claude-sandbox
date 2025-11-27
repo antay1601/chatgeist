@@ -1,0 +1,32 @@
+# Dockerfile для безопасного запуска Claude CLI в изолированном окружении
+FROM python:3.12-slim
+
+# Устанавливаем минимальный набор утилит
+# sqlite3 нужен для Claude CLI чтобы выполнять SQL-запросы к БД
+RUN apt-get update && apt-get install -y \
+    curl \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем непривилегированного пользователя для запуска Claude CLI
+RUN useradd -m -u 1000 -s /bin/bash claudeuser
+
+# Создаем рабочую директорию для БД
+RUN mkdir -p /workspace && chown claudeuser:claudeuser /workspace
+
+# Переключаемся на непривилегированного пользователя ДО установки Claude CLI
+USER claudeuser
+WORKDIR /workspace
+
+# Устанавливаем Claude CLI под пользователем claudeuser
+# Используем официальный установочный скрипт
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Добавляем Claude CLI в PATH для claudeuser
+ENV PATH="/home/claudeuser/.local/bin:${PATH}"
+
+# Ограничиваем доступ: только чтение БД
+# БД будет примонтирована через volume как read-only
+
+# Команда по умолчанию - ждать команд
+CMD ["tail", "-f", "/dev/null"]

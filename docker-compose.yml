@@ -1,0 +1,43 @@
+services:
+  claude-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-sandbox
+    container_name: claude-sandbox
+
+    # Монтируем только БД в режиме read-only для безопасности
+    # Также пробрасываем конфигурацию Claude для авторизации (rw для логов)
+    volumes:
+      - ./telegram_messages.db:/workspace/telegram_messages.db:ro
+      - ~/.claude:/home/claudeuser/.claude:rw
+      - ~/.claude.json:/home/claudeuser/.claude.json:rw
+
+    # Переменные окружения
+    environment:
+      - TERM=xterm
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Отключаем сетевой доступ, кроме API Anthropic (можно дополнительно настроить)
+    # network_mode: "none"  # Раскомментировать для полной изоляции (но нужен API доступ)
+
+    # Ограничения безопасности
+    security_opt:
+      - no-new-privileges:true
+    # Отключаем read_only для работы Claude CLI (он пишет конфиги в home)
+    # Вместо этого используем непривилегированного пользователя и ограничиваем доступ к БД через ro mount
+    # read_only: true
+    tmpfs:
+      - /tmp
+
+    # Restart policy
+    restart: unless-stopped
