@@ -6,11 +6,8 @@ services:
     container_name: claude-sandbox
 
     # Монтируем только БД в режиме read-only для безопасности
-    # Также пробрасываем конфигурацию Claude для авторизации (rw для логов)
     volumes:
       - ./telegram_messages.db:/workspace/telegram_messages.db:ro
-      - ~/.claude:/home/claudeuser/.claude:rw
-      - ~/.claude.json:/home/claudeuser/.claude.json:rw
 
     # Переменные окружения
     environment:
