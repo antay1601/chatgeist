@@ -1,105 +1,183 @@
-# ChatGeist: AI-Powered Chat Analyzer
+# ChatGeist
 
-ChatGeist — это набор инструментов для анализа архивов чатов с помощью искусственного интеллекта. Он предоставляет два интерфейса — **CLI (интерфейс командной строки)** и **Telegram-бот** — для выполнения запросов к вашей базе данных сообщений через Claude AI.
+Telegram-бот для анализа истории чатов с помощью Claude AI.
 
-В основе системы лежит скрипт, который формирует подробные запросы к **Claude CLI**, заставляя его анализировать локальную базу данных SQLite, созданную из вашего экспорта чатов Telegram.
+## Возможности
 
-## Как это работает
+- Мониторинг нескольких Telegram-чатов/каналов
+- Инкрементальное обновление данных
+- AI-анализ через Claude в изолированном Docker-контейнере
+- Полнотекстовый поиск по сообщениям
 
-Весь процесс можно разбить на три этапа:
+## Архитектура
 
-1.  **Конвертация данных**: Вы экспортируете историю чата из Telegram в формате `JSONL` и с помощью скрипта `convert_jsonl_to_sqlite.py` преобразуете её в базу данных `telegram_messages.db`.
-2.  **Формирование запроса**: Когда вы задаете вопрос через CLI или бота, скрипт `ask_claude_cli.py` формирует специальный промпт. Этот промпт содержит ваш вопрос и инструкцию для Claude AI использовать базу данных `telegram_messages.db` для поиска ответа.
-3.  **Анализ и ответ**: Скрипт вызывает установленный в вашей системе **Claude CLI**, передавая ему сгенерированный промпт. Claude AI анализирует данные и возвращает развернутый ответ, который затем отображается в консоли или отправляется в Telegram.
-
-## Ключевые компоненты
-
--   `export_dir/convert_jsonl_to_sqlite.py`: Скрипт для преобразования `messages.jsonl` в `telegram_messages.db`.
--   `ask_claude_cli.py`: Основной скрипт, который содержит логику для вызова Claude CLI. Может использоваться как самостоятельный инструмент.
--   `bot_with_claude_cli.py`: Telegram-бот, который импортирует и использует `ask_claude_cli.py` для ответа на запросы пользователей.
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Telegram API   │────▶│ update_manager.py│────▶│  databases/*.db │
+│  (Telethon)     │     │                  │     │  (SQLite)       │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                                                          ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Telegram Bot   │◀───▶│   bot_multi.py   │────▶│  Docker Claude  │
+│  (пользователь) │     │                  │     │  (анализ)       │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
 
 ## Требования
 
--   Python 3.12+
--   `uv` (менеджер пакетов Python)
--   **Claude CLI**: Установленный и доступный в системном `PATH`. Инструкции по установке можно найти в [официальном репозитории](https://github.com/anthropics/claude-cli).
--   Файл экспорта сообщений `messages.jsonl` из Telegram.
+- Python 3.12+
+- Docker
+- uv (менеджер пакетов)
 
-## Установка и настройка
+## Быстрый старт
 
-### Шаг 1: Установка Claude CLI
+### 1. Клонирование и установка
 
-Прежде всего, установите Claude CLI, следуя [официальной инструкции](https://github.com/anthropics/claude-cli). Убедитесь, что команда `claude` доступна из вашей консоли.
-
-### Шаг 2: Установка зависимостей проекта
-
-1.  Клонируйте репозиторий:
-    ```bash
-    git clone https://github.com/ваш-логин/chatgeist.git
-    cd chatgeist
-    ```
-
-2.  Создайте виртуальное окружение и установите зависимости Python:
-    ```bash
-    uv sync
-    ```
-
-3.  Создайте файл `.env` из примера. Он нужен для токена Telegram-бота.
-    ```bash
-    cp .env.example .env
-    ```
-
-4.  (Опционально) Если вы планируете использовать Telegram-бота, получите токен у [@BotFather](https://t.me/botfather) и добавьте его в `.env`:
-    ```
-    TELEGRAM_BOT_TOKEN=ваш_токен_здесь
-    ```
-
-## Порядок работы
-
-### Шаг 1: Подготовка базы данных
-
-1.  Экспортируйте историю вашего чата из Telegram Desktop в формате "JSON lines".
-2.  Поместите полученный файл `messages.jsonl` в папку `export_dir`.
-3.  Запустите скрипт конвертации:
-    ```bash
-    uv run python export_dir/convert_jsonl_to_sqlite.py
-    ```
-    После выполнения в корневой папке проекта появится файл `telegram_messages.db`.
-
-### Шаг 2: Анализ данных
-
-Теперь вы можете задавать вопросы к вашей базе данных одним из двух способов:
-
-#### Вариант А: Через CLI
-
-Запустите `ask_claude_cli.py`, передав ваш вопрос в кавычках в качестве аргумента:
 ```bash
-uv run python ask_claude_cli.py "Кто самый активный участник чата за последний месяц?"
+git clone <repo-url>
+cd chatgeist
+uv sync
 ```
-Ответ будет выведен в консоль и сохранен в файл `claude_response.md`.
 
-#### Вариант Б: Через Telegram-бота
+### 2. Настройка окружения
 
-1.  Запустите бота:
-    ```bash
-    uv run python bot_with_claude_cli.py
-    ```
-2.  Найдите вашего бота в Telegram и отправьте ему любой вопрос для анализа. Бот перенаправит его в Claude CLI и вернет вам готовый отчет.
+Создайте файл `.env`:
+
+```bash
+# Telegram User API (https://my.telegram.org)
+TELEGRAM_API_ID=your_api_id
+TELEGRAM_API_HASH=your_api_hash
+
+# Telegram Bot Token (@BotFather)
+TELEGRAM_BOT_TOKEN=your_bot_token
+
+# Claude OAuth Token (из Claude CLI)
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+```
+
+### 3. Добавление чатов
+
+```bash
+# Добавить публичный канал
+uv run python update_manager.py --add durov @durov
+
+# Добавить приватную группу по ID
+uv run python update_manager.py --add mygroup -1001234567890
+
+# Посмотреть список
+uv run python update_manager.py --list
+```
+
+### 4. Скачивание истории
+
+```bash
+# Все чаты
+uv run python update_manager.py
+
+# Конкретный чат
+uv run python update_manager.py --chat durov
+
+# С лимитом (для теста)
+uv run python update_manager.py --chat durov --limit 1000
+```
+
+При первом запуске потребуется авторизация в Telegram (номер телефона + код).
+
+### 5. Запуск Docker
+
+```bash
+docker compose up -d
+```
+
+### 6. Запуск бота
+
+```bash
+uv run bot_multi.py
+```
+
+## Использование бота
+
+| Команда | Описание |
+|---------|----------|
+| `/chats` | Выбрать чат для анализа |
+| `/current` | Текущий выбранный чат |
+| `/help` | Справка |
+
+После выбора чата просто отправляйте вопросы текстом:
+- "Сколько сообщений в базе?"
+- "Кто самый активный участник?"
+- "О чём писали вчера?"
+- "Найди сообщения про Python"
+
+## Команды update_manager.py
+
+```bash
+uv run python update_manager.py              # Обновить все чаты
+uv run python update_manager.py --chat NAME  # Обновить один чат
+uv run python update_manager.py --full       # Полный дамп (не инкрементальный)
+uv run python update_manager.py --list       # Список чатов
+uv run python update_manager.py --add A T    # Добавить чат (alias, target)
+uv run python update_manager.py --remove A   # Удалить чат
+uv run python update_manager.py --stats      # Статистика БД
+```
 
 ## Структура проекта
 
 ```
 chatgeist/
-├── ask_claude_cli.py        # CLI для анализа через Claude CLI
-├── bot_with_claude_cli.py   # Telegram-бот (использует ask_claude_cli.py)
-├── export_dir/
-│   ├── convert_jsonl_to_sqlite.py # Скрипт конвертации JSONL в SQLite
-│   └── messages.jsonl       # Исходные данные (не в git)
-├── telegram_messages.db     # База данных SQLite (не в git)
-├── .env                     # Переменные окружения (не в git)
-├── .env.example             # Пример конфигурации
-├── pyproject.toml           # Конфигурация проекта и зависимости
-└── README.md                # Этот файл
+├── bot_multi.py              # Telegram-бот
+├── update_manager.py         # Оркестратор обновлений
+├── tg_dump_with_reactions.py # Дампер истории Telegram
+├── jsonl_to_sqlite.py        # Конвертер JSONL → SQLite
+├── targets.json              # Конфигурация чатов
+├── docker-compose.yml        # Docker конфигурация
+├── Dockerfile.claude-sandbox # Docker образ для Claude
+├── pyproject.toml            # Зависимости Python
+└── .env                      # Секреты (не в git)
+```
+
+## Развёртывание на сервере
+
+```bash
+# 1. Клонировать
+git clone <repo> && cd chatgeist
+
+# 2. Установить зависимости
+uv sync
+
+# 3. Создать .env с секретами
+nano .env
+
+# 4. Добавить чаты и скачать историю
+uv run python update_manager.py --add channel @channel_name
+uv run python update_manager.py
+
+# 5. Запустить Docker
+docker compose up -d
+
+# 6. Запустить бота (в screen/tmux или systemd)
+uv run bot_multi.py
+```
+
+### Автообновление через Cron
+
+```bash
+# Каждый час обновлять все чаты
+0 * * * * cd /path/to/chatgeist && uv run python update_manager.py >> logs/update.log 2>&1
+```
+
+## Обновление OAuth токена
+
+Токен Claude истекает периодически. Для обновления:
+
+```bash
+# macOS (из Keychain)
+security find-generic-password -s "Claude Code-credentials" -w | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])"
+
+# Обновить в .env и перезапустить Docker
+docker compose down && docker compose up -d
 ```
 
 ## Лицензия
