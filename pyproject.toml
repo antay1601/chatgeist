@@ -9,4 +9,5 @@ dependencies = [
     "aiosqlite>=0.21.0",
     "anthropic>=0.72.1",
     "python-dotenv>=1.2.1",
+    "telethon>=1.37.0",
 ]

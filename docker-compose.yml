@@ -5,9 +5,12 @@ services:
       dockerfile: Dockerfile.claude-sandbox
     container_name: claude-sandbox
 
-    # Монтируем только БД в режиме read-only для безопасности
+    # Монтируем базы данных в режиме read-only для безопасности
     volumes:
+      # Старая БД (для совместимости с bot_secure_simple.py)
       - ./telegram_messages.db:/workspace/telegram_messages.db:ro
+      # Новая папка с несколькими БД (для bot_multi.py)
+      - ./databases:/workspace/dbs:ro
 
     # Переменные окружения
     environment:

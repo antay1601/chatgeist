@@ -1,4 +1,4 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
 build/
@@ -7,11 +7,56 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
 
-# Environment variables
+# Environment variables (secrets)
 .env
 
-# Database
+# Databases
 *.db
+databases/
 telegram_messages.db
+
+# Telethon session (contains auth tokens)
+*.session
+
+# Export data (temporary)
+export_data/
+export_dir/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Fonts (not needed)
+fonts/
+
+# Old documentation (remove from git)
+BOTS_ANALYSIS.md
+BOT_SECURE_ARCHITECTURE.md
+SECURITY_SETUP.md
+UTILITIES_ANALYSIS.md
+TG_DUMP_ANALYSIS.md
+TECHNICAL_SPEC.md
+USER_GUIDE.md
+
+# Old bot variants (remove from git)
+bot_advanced.py
+bot_gemini.py
+bot_openai.py
+bot_secure.py
+bot_secure_simple.py
+bot_with_claude_cli.py
+ask_claude_cli.py
+check_models.py
+test_integration.py
+test_*.py
