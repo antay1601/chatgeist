@@ -179,10 +179,11 @@ def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> s
 
     logger.info(f"Запрос к Claude (БД: {db_filename}, история: {len(history)})")
 
-    # Выполняем Claude CLI в Docker
+    # Выполняем Claude CLI в Docker (от пользователя node, не root)
     result = subprocess.run(
         [
             'docker', 'exec',
+            '-u', 'node',
             DOCKER_CONTAINER,
             'claude', '--print', '--dangerously-skip-permissions',
             full_prompt
