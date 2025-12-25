@@ -11,11 +11,14 @@ services:
       - ./telegram_messages.db:/workspace/telegram_messages.db:ro
       # Новая папка с несколькими БД (для bot_multi.py)
       - ./databases:/workspace/dbs:ro
+      # Claude credentials с refresh token для автообновления токена
+      - ./.claude-docker/credentials.json:/home/node/.claude/.credentials.json:rw
 
     # Переменные окружения
     environment:
       - TERM=xterm
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      # OAuth токен убран - теперь используется credentials файл с refresh token
+      # - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
 
     # Ограничения ресурсов
     deploy:

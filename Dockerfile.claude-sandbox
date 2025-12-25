@@ -1,20 +1,37 @@
 # Dockerfile для безопасного запуска Claude CLI в изолированном окружении
 FROM node:20-slim
 
-# Устанавливаем минимальный набор утилит
+# Устанавливаем минимальный набор утилит и cron
 RUN apt-get update && apt-get install -y \
     sqlite3 \
+    cron \
+    curl \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем рабочую директорию
+# Создаем рабочую директорию и директорию для Claude
 RUN mkdir -p /workspace && chown node:node /workspace
+RUN mkdir -p /home/node/.claude && chown node:node /home/node/.claude
 
 # Устанавливаем Claude CLI глобально через npm
 RUN npm install -g @anthropic-ai/claude-code
 
+# Копируем скрипт обновления токена
+COPY refresh_token.sh /usr/local/bin/refresh_token.sh
+RUN chmod +x /usr/local/bin/refresh_token.sh
+
+# Настраиваем cron для обновления токена каждый час
+RUN echo "0 * * * * root CREDENTIALS_FILE=/home/node/.claude/.credentials.json /usr/local/bin/refresh_token.sh >> /var/log/token_refresh.log 2>&1" > /etc/cron.d/token-refresh
+RUN chmod 0644 /etc/cron.d/token-refresh
+RUN touch /var/log/token_refresh.log && chmod 666 /var/log/token_refresh.log
+
+# Копируем entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Используем встроенного пользователя node (UID 1000)
-USER node
 WORKDIR /workspace
 
-# Команда по умолчанию - ждать команд
+# Запускаем через entrypoint (cron + основной процесс)
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["tail", "-f", "/dev/null"]
