@@ -20,6 +20,9 @@ telegram_messages.db
 # Telethon session (contains auth tokens)
 *.session
 
+# Claude credentials for Docker (contains OAuth tokens)
+.claude-docker/
+
 # Export data (temporary)
 export_data/
 export_dir/
