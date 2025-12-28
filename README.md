@@ -52,7 +52,10 @@ TELEGRAM_API_HASH=your_api_hash
 # Telegram Bot Token (@BotFather)
 TELEGRAM_BOT_TOKEN=your_bot_token
 
-# Claude OAuth Token (из Claude CLI)
+# Anthropic API Key (для bot_anthropic.py)
+ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# Claude OAuth Token (для bot_multi.py с Docker)
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 ```
 
@@ -92,7 +95,15 @@ docker compose up -d
 
 ### 6. Запуск бота
 
+Есть две версии бота:
+
 ```bash
+# Вариант 1: Прямой API (рекомендуется)
+# Требует ANTHROPIC_API_KEY, не требует Docker
+uv run bot_anthropic.py
+
+# Вариант 2: Docker sandbox
+# Требует запущенный Docker и CLAUDE_CODE_OAUTH_TOKEN
 uv run bot_multi.py
 ```
 
@@ -126,7 +137,8 @@ uv run python update_manager.py --stats      # Статистика БД
 
 ```
 chatgeist/
-├── bot_multi.py              # Telegram-бот
+├── bot_anthropic.py          # Telegram-бот (прямой Anthropic API)
+├── bot_multi.py              # Telegram-бот (Docker sandbox)
 ├── update_manager.py         # Оркестратор обновлений
 ├── tg_dump_with_reactions.py # Дампер истории Telegram
 ├── jsonl_to_sqlite.py        # Конвертер JSONL → SQLite
