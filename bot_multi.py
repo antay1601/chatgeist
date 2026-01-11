@@ -10,13 +10,14 @@ import warnings
 import subprocess
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
+from pdf_generator import generate_pdf
 
 # Игнорируем предупреждения о deprecation
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -382,31 +383,22 @@ async def handle_query(message: Message, state: FSMContext):
         if len(report) <= 4096:
             await status_msg.edit_text(report)
         else:
-            # Разбиваем на части
-            await status_msg.delete()
+            # Генерируем PDF для длинных ответов
+            pdf_buffer = generate_pdf(report, title=f"Отчёт: {chat_name}")
 
-            parts = []
-            current_part = []
-            current_length = 0
+            # Превью (первые 500 символов)
+            preview = report[:500] + "...\n\n📄 Полный ответ в PDF файле:"
+            await status_msg.edit_text(preview)
 
-            for line in report.split('\n'):
-                line_length = len(line) + 1
-                if current_length + line_length > 4000:
-                    parts.append('\n'.join(current_part))
-                    current_part = [line]
-                    current_length = line_length
-                else:
-                    current_part.append(line)
-                    current_length += line_length
-
-            if current_part:
-                parts.append('\n'.join(current_part))
-
-            for i, part in enumerate(parts):
-                if i == 0:
-                    await message.answer(part)
-                else:
-                    await message.answer(f"(продолжение {i+1})\n\n{part}")
+            # Отправляем PDF
+            pdf_file = BufferedInputFile(
+                pdf_buffer.read(),
+                filename=f"report_{chat_name}.pdf"
+            )
+            await message.answer_document(
+                document=pdf_file,
+                caption="📊 Полный отчёт"
+            )
 
     except subprocess.TimeoutExpired:
         logger.error("Таймаут при обработке запроса")

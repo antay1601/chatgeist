@@ -8,6 +8,7 @@ dependencies = [
     "aiogram>=3.22.0",
     "aiosqlite>=0.21.0",
     "anthropic>=0.72.1",
+    "fpdf2>=2.8.0",
     "python-dotenv>=1.2.1",
     "telethon>=1.37.0",
 ]
