@@ -17,8 +17,7 @@ services:
     # Переменные окружения
     environment:
       - TERM=xterm
-      # OAuth токен убран - теперь используется credentials файл с refresh token
-      # - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
 
     # Ограничения ресурсов
     deploy:
