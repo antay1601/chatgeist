@@ -118,7 +118,7 @@ async def fetch_reactors_for_message(client: TelegramClient, peer, msg_id: int) 
         offset = r.next_offset
     return reactors
 
-def msg_basic_dict(m: types.Message) -> Dict[str, Any]:
+def msg_basic_dict(m: types.Message, sender_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # Базовые поля сообщения (без тяжёлых сетевых вызовов)
     d: Dict[str, Any] = {
         "id": m.id,
@@ -130,12 +130,18 @@ def msg_basic_dict(m: types.Message) -> Dict[str, Any]:
         "forwards": getattr(m, "forwards", None),
         "post_author": getattr(m, "post_author", None),
         "sender_id": getattr(m, "sender_id", None),
+        "sender_username": None,
+        "sender_display_name": None,
         "from_scheduled": getattr(m, "from_scheduled", False),
         "via_bot_id": getattr(m, "via_bot_id", None),
         "mentions": [getattr(e, "user_id", None) for e in (m.entities or []) if getattr(e, "user_id", None)],
         "has_media": m.media is not None,
         "reactions_counts": {},   # заполним ниже
     }
+    # Добавляем информацию об отправителе если есть
+    if sender_info:
+        d["sender_username"] = sender_info.get("username")
+        d["sender_display_name"] = sender_info.get("display_name")
     # Сводные счётчики реакций из Message.reactions
     if m.reactions and getattr(m.reactions, "results", None):
         rc = {}
@@ -143,6 +149,43 @@ def msg_basic_dict(m: types.Message) -> Dict[str, Any]:
             rc[reaction_to_str(item.reaction)] = item.count
         d["reactions_counts"] = rc
     return d
+
+
+async def get_sender_info(client: TelegramClient, sender_id: Optional[int], cache: Dict[int, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Получает информацию об отправителе (username, display_name).
+    Использует кэш для избежания повторных запросов.
+    """
+    if sender_id is None:
+        return None
+
+    # Проверяем кэш
+    if sender_id in cache:
+        return cache[sender_id]
+
+    try:
+        entity = await client.get_entity(sender_id)
+
+        if isinstance(entity, types.User):
+            username = entity.username
+            display_name = (entity.first_name or "") + (" " + entity.last_name if entity.last_name else "")
+            display_name = display_name.strip() or username or str(sender_id)
+        elif isinstance(entity, (types.Channel, types.Chat)):
+            username = getattr(entity, "username", None)
+            display_name = getattr(entity, "title", None) or username or str(sender_id)
+        else:
+            username = None
+            display_name = str(sender_id)
+
+        info = {"username": username, "display_name": display_name}
+        cache[sender_id] = info
+        return info
+
+    except (errors.RPCError, ValueError) as e:
+        # Пользователь удалён или недоступен
+        info = {"username": None, "display_name": str(sender_id)}
+        cache[sender_id] = info
+        return info
 
 async def maybe_download_media(client: TelegramClient, msg: types.Message, media_dir: Path) -> Optional[str]:
     if not msg.media:
@@ -233,6 +276,7 @@ async def dump_chat_history(
     skipped_by_date = 0
     errors_count = 0
     last_id = 0
+    sender_cache: Dict[int, Dict[str, Any]] = {}  # Кэш информации об отправителях
 
     print(f"📥 Дамп: {chat_target} (min_id={min_id}) -> {jsonl_path}")
 
@@ -246,7 +290,10 @@ async def dump_chat_history(
             skipped_by_date += 1
             continue
 
-        d = msg_basic_dict(msg)
+        # Получаем информацию об отправителе
+        sender_info = await get_sender_info(client, msg.sender_id, sender_cache)
+
+        d = msg_basic_dict(msg, sender_info)
 
         # Полный список реакторов (дорого по API)
         if with_reactors and msg.reactions:

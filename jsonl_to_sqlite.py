@@ -174,7 +174,13 @@ def convert_jsonl_to_sqlite(jsonl_path: Path, db_path: Path) -> dict:
 
                 # Отправитель
                 sender_id = msg.get('sender_id')
+                sender_username = msg.get('sender_username')
+                sender_display_name = msg.get('sender_display_name')
                 post_author = msg.get('post_author', '')
+
+                # Fallback для display_name если не заполнено
+                if not sender_display_name:
+                    sender_display_name = post_author or (str(sender_id) if sender_id else None)
 
                 # Реакции
                 reactions_count, reactions_detail = format_reactions(
@@ -194,8 +200,8 @@ def convert_jsonl_to_sqlite(jsonl_path: Path, db_path: Path) -> dict:
                     date_iso,
                     msg.get('message', ''),
                     sender_id,
-                    None,  # username не всегда есть в дампе
-                    post_author or str(sender_id or ''),
+                    sender_username,
+                    sender_display_name,
                     msg.get('reply_to_msg_id'),
                     reactions_count,
                     reactions_detail,
