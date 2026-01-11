@@ -191,7 +191,7 @@ def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> s
         text=True,
         capture_output=True,
         check=True,
-        timeout=300
+        timeout=1200  # 20 минут
     )
 
     return result.stdout.strip()
@@ -410,7 +410,7 @@ async def handle_query(message: Message, state: FSMContext):
 
     except subprocess.TimeoutExpired:
         logger.error("Таймаут при обработке запроса")
-        await status_msg.edit_text("❌ Превышено время ожидания (5 минут).\nПопробуйте упростить запрос.")
+        await status_msg.edit_text("❌ Превышено время ожидания (20 минут).\nПопробуйте упростить запрос.")
 
     except subprocess.CalledProcessError as e:
         error_output = e.stderr if e.stderr else e.stdout
