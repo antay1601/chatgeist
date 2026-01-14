@@ -41,8 +41,31 @@ if not BOT_TOKEN:
 DB_ROOT_HOST = Path("databases")          # Папка на хосте
 DB_ROOT_DOCKER = "/workspace/dbs"         # Папка внутри контейнера
 
+# Пути к промптам
+PROMPTS_DIR = Path("prompts")
+
 # Docker контейнер
 DOCKER_CONTAINER = "claude-sandbox"
+
+# Конфигурация Skills
+SKILLS = {
+    "dossier": {
+        "triggers": ["досье", "профиль", "кто такой", "кто такая", "информация о", "расскажи о пользователе"],
+        "file": "skills/dossier.md"
+    },
+    "summary": {
+        "triggers": ["саммари", "дайджест", "о чём говорили", "что обсуждали", "главное за", "что было вчера", "что было сегодня"],
+        "file": "skills/summary.md"
+    },
+    "search": {
+        "triggers": ["найди", "поиск", "где упоминается", "кто писал про", "найти сообщения"],
+        "file": "skills/search.md"
+    },
+    "top": {
+        "triggers": ["топ", "рейтинг", "самые активные", "популярные", "больше всех", "лучшие"],
+        "file": "skills/top.md"
+    }
+}
 
 # Инициализация бота с FSM хранилищем
 bot = Bot(token=BOT_TOKEN)
@@ -75,6 +98,44 @@ def get_available_databases() -> list[dict]:
         })
 
     return databases
+
+
+def load_prompt(filename: str) -> str:
+    """
+    Загружает промпт из файла.
+
+    Args:
+        filename: Имя файла относительно PROMPTS_DIR (например, "base.md" или "skills/dossier.md")
+
+    Returns:
+        Содержимое файла или пустую строку если файл не найден
+    """
+    prompt_path = PROMPTS_DIR / filename
+    if prompt_path.exists():
+        return prompt_path.read_text(encoding="utf-8")
+    logger.warning(f"Промпт не найден: {prompt_path}")
+    return ""
+
+
+def detect_skill(query: str) -> str | None:
+    """
+    Определяет, какой skill использовать на основе запроса.
+
+    Args:
+        query: Текст запроса пользователя
+
+    Returns:
+        Имя skill или None если подходящий не найден
+    """
+    query_lower = query.lower()
+
+    for skill_name, skill_config in SKILLS.items():
+        for trigger in skill_config["triggers"]:
+            if trigger in query_lower:
+                logger.info(f"Обнаружен skill: {skill_name} (триггер: '{trigger}')")
+                return skill_name
+
+    return None
 
 
 def check_docker_container() -> bool:
@@ -136,47 +197,46 @@ def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> s
     # Путь к БД внутри Docker контейнера
     docker_db_path = f"{DB_ROOT_DOCKER}/{db_filename}"
 
-    # Инструкция по форматированию
-    formatting = (
-        "\nВАЖНО: Не используй Markdown-разметку. "
-        "Отвечай простым текстом. Используй эмодзи и отступы для структурирования."
-    )
+    # Загружаем базовый промпт
+    base_prompt = load_prompt("base.md")
+    if not base_prompt:
+        # Fallback если файл не найден
+        base_prompt = """Ты — аналитик данных Telegram-чатов.
+Используй базу данных SQLite для анализа.
+Таблица messages содержит: id, timestamp, date_iso, message, sender_id, sender_username, sender_display_name, reply_to_msg_id, reactions_count, reactions_detail, views, forwards, permalink."""
 
-    # Формируем промпт
+    # Заменяем плейсхолдер пути к БД
+    base_prompt = base_prompt.replace("{db_path}", docker_db_path)
+
+    # Определяем skill на основе запроса
+    skill_name = detect_skill(question)
+    skill_prompt = ""
+
+    if skill_name and skill_name in SKILLS:
+        skill_file = SKILLS[skill_name]["file"]
+        skill_prompt = load_prompt(skill_file)
+        if skill_prompt:
+            logger.info(f"Загружен skill: {skill_name}")
+
+    # Формируем историю диалога
+    history_section = ""
     if history:
         history_text = "\n\n".join([
             f"{'Пользователь' if msg['role'] == 'user' else 'Ассистент'}: {msg['content']}"
             for msg in history
         ])
+        history_section = f"\n\n## История диалога\n\n{history_text}"
 
-        full_prompt = f"""Используй базу данных SQLite по пути '{docker_db_path}' для анализа.
+    # Собираем полный промпт
+    full_prompt = base_prompt
 
-Таблица messages содержит поля:
-- id, timestamp, date_iso, message (текст)
-- sender_id, sender_username, sender_display_name
-- reply_to_msg_id, reactions_count, reactions_detail
-- views, forwards, permalink
+    if skill_prompt:
+        full_prompt += f"\n\n---\n\n{skill_prompt}"
 
-ИСТОРИЯ ДИАЛОГА:
-{history_text}
+    if history_section:
+        full_prompt += history_section
 
-ТЕКУЩИЙ ВОПРОС: {question}
-
-Проанализируй данные с учётом контекста и ответь на вопрос.
-{formatting}"""
-    else:
-        full_prompt = f"""Используй базу данных SQLite по пути '{docker_db_path}' для анализа.
-
-Таблица messages содержит поля:
-- id, timestamp, date_iso, message (текст)
-- sender_id, sender_username, sender_display_name
-- reply_to_msg_id, reactions_count, reactions_detail
-- views, forwards, permalink
-
-Вопрос: {question}
-
-Проанализируй данные и ответь на вопрос.
-{formatting}"""
+    full_prompt += f"\n\n## Текущий запрос\n\n{question}"
 
     logger.info(f"Запрос к Claude (БД: {db_filename}, история: {len(history)})")
 
@@ -379,10 +439,12 @@ async def handle_query(message: Message, state: FSMContext):
         import asyncio
         report = await asyncio.to_thread(ask_claude_secure, user_query, history, current_db)
 
-        # Отправляем ответ
-        if len(report) <= 4096:
+        # Отправляем ответ (PDF для длинных ответов > 2500 символов)
+        logger.info(f"Длина ответа: {len(report)} символов")
+        if len(report) <= 2500:
             await status_msg.edit_text(report)
         else:
+            logger.info(f"Генерирую PDF (ответ {len(report)} > 2500)")
             # Генерируем PDF для длинных ответов
             pdf_buffer = generate_pdf(report, title=f"Отчёт: {chat_name}")
 
