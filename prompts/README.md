@@ -129,3 +129,77 @@ skill = load_prompt("skills/dossier.md")
 skill = detect_skill("Досье на @durov")  # -> "dossier"
 skill = detect_skill("Сколько сообщений?")  # -> None
 ```
+
+## PDF для длинных ответов
+
+Если ответ превышает **2500 символов**, автоматически генерируется PDF файл:
+- Превью (первые 500 символов) отправляется как текст
+- Полный ответ отправляется как PDF-документ
+
+Порог настраивается в `bot_multi.py`:
+```python
+if len(report) <= 2500:
+    await status_msg.edit_text(report)
+else:
+    # Генерируем PDF
+    pdf_buffer = generate_pdf(report, title=f"Отчёт: {chat_name}")
+```
+
+## Деплой на сервер
+
+### Быстрый деплой
+
+```bash
+# 1. Закоммитить и запушить
+git add .
+git commit -m "feat: описание изменений"
+git push origin main
+
+# 2. На сервере (или через SSH)
+ssh -i ~/.ssh/id_hoodyalko_dev root@104.248.18.118
+
+# 3. Обновить код
+cd /home/bot/chatgeist
+sudo -u bot git pull origin main
+
+# 4. Перезапустить бота
+systemctl restart chatgeist-bot.service
+
+# 5. Проверить логи
+tail -f /home/bot/chatgeist/bot.log
+```
+
+### Управление ботом на сервере
+
+```bash
+# Статус
+systemctl status chatgeist-bot.service
+
+# Перезапуск
+systemctl restart chatgeist-bot.service
+
+# Логи
+tail -f /home/bot/chatgeist/bot.log
+
+# Логи через journalctl
+journalctl -u chatgeist-bot.service -f
+```
+
+### Обновление OAuth токена на сервере
+
+```bash
+# Токен нужно обновлять периодически
+# 1. Получить новый токен локально (macOS)
+security find-generic-password -s "Claude Code-credentials" -w | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['claudeAiOauth']['accessToken'])"
+
+# 2. Обновить .env на сервере
+ssh root@server
+nano /home/bot/chatgeist/.env
+# Заменить CLAUDE_CODE_OAUTH_TOKEN=...
+
+# 3. Перезапустить Docker и бота
+cd /home/bot/chatgeist
+docker compose down && docker compose up -d
+systemctl restart chatgeist-bot.service
+```
