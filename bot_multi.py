@@ -583,27 +583,30 @@ async def handle_query(message: Message, state: FSMContext):
         # Запрос к Claude со стримингом статуса
         report = await ask_claude_streaming(user_query, history, current_db, status_msg.message_id, update_status)
 
-        # Отправляем ответ (PDF для длинных ответов > 2500 символов)
-        logger.info(f"Длина ответа: {len(report)} символов")
+        # Відправляємо відповідь (PDF для довгих > 2500 символів)
+        logger.info(f"Довжина відповіді: {len(report)} символів")
         if len(report) <= 2500:
+            # Короткі відповіді — текстом
             await status_msg.edit_text(report, reply_markup=None)
         else:
-            logger.info(f"Генерирую PDF (ответ {len(report)} > 2500)")
-            # Генерируем PDF для длинных ответов
+            # Довгі відповіді — тільки PDF
+            logger.info(f"Генерую PDF (відповідь {len(report)} > 2500)")
             pdf_buffer = generate_pdf(report, title=f"Звіт: {chat_name}")
 
-            # Превью (первые 500 символов)
-            preview = report[:500] + "...\n\n📄 Повна відповідь у PDF файлі:"
-            await status_msg.edit_text(preview, reply_markup=None)
+            # Видаляємо статусне повідомлення
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass  # Ігноруємо помилки видалення
 
-            # Отправляем PDF
+            # Відправляємо тільки PDF
             pdf_file = BufferedInputFile(
                 pdf_buffer.read(),
                 filename=f"report_{chat_name}.pdf"
             )
             await message.answer_document(
                 document=pdf_file,
-                caption="📊 Повний звіт"
+                caption="📊 Звіт готовий"
             )
 
     except asyncio.CancelledError:
