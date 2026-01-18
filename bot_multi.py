@@ -16,7 +16,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+# InlineKeyboardBuilder більше не потрібен — бот працює з одним чатом
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from pdf_generator import generate_pdf
@@ -431,18 +431,28 @@ def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> s
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     """Команда /start"""
-    welcome_text = """
-👋 Ласкаво просимо до ChatGeist Multi-Chat Bot!
+    # Автоматично обираємо базу даних
+    databases = get_available_databases()
+    if databases:
+        await state.update_data(current_db=databases[0]["filename"])
+        chat_name = databases[0]["name"]
+        welcome_text = f"""
+👋 Ласкаво просимо до ChatGeist Bot!
 
-Цей бот аналізує історію Telegram-чатів за допомогою AI.
+Цей бот аналізує історію Telegram-чату за допомогою AI.
 
-📋 Команди:
-  /chats — обрати чат для аналізу
-  /current — показати поточний обраний чат
-  /help — довідка
+📊 Підключено чат: {chat_name}
 
-💡 Оберіть чат через /chats, потім ставте запитання!
+💡 Просто ставте запитання!
+
+📝 Приклади:
+• Скільки всього повідомлень?
+• Хто найактивніший учасник?
+• Знайди повідомлення про Python
+• Досьє на @username
     """
+    else:
+        welcome_text = "❌ Немає доступних баз даних."
     await message.answer(welcome_text)
 
 
@@ -452,71 +462,24 @@ async def cmd_help(message: Message):
     help_text = """
 📖 Довідка по боту
 
-🔹 /chats — показати список доступних чатів
-🔹 /current — який чат зараз обрано
-🔹 /start — привітання
-
 💡 Як користуватися:
-1. Оберіть чат через /chats
-2. Поставте запитання текстом
-3. Для уточнення — дайте відповідь на повідомлення бота
+1. Поставте запитання текстом
+2. Для уточнення — дайте відповідь на повідомлення бота
 
 📝 Приклади запитань:
 • Скільки всього повідомлень?
 • Хто найактивніший учасник?
 • Про що говорили вчора?
 • Знайди повідомлення про Python
+• Досьє на @username
+• Топ кафе / ресторанів
 
 🔒 Безпека: всі запити обробляються в ізольованому Docker-контейнері.
     """
     await message.answer(help_text)
 
 
-@dp.message(Command("chats"))
-async def cmd_chats(message: Message):
-    """Команда /chats — показать список доступных БД"""
-    databases = get_available_databases()
-
-    if not databases:
-        await message.answer(
-            "❌ Немає доступних баз даних.\n\n"
-            f"Переконайтеся, що папка `{DB_ROOT_HOST}/` містить .db файли.\n"
-            "Використовуйте `python update_manager.py` для завантаження чатів."
-        )
-        return
-
-    builder = InlineKeyboardBuilder()
-    for db in databases:
-        label = f"{db['name']} ({db['size_mb']} MB)"
-        builder.button(text=label, callback_data=f"select_db:{db['filename']}")
-
-    builder.adjust(1)  # По 1 кнопке в ряд
-
-    text = f"📂 Доступно баз даних: {len(databases)}\n\nОберіть чат для аналізу:"
-    await message.answer(text, reply_markup=builder.as_markup())
-
-
-@dp.callback_query(F.data.startswith("select_db:"))
-async def on_db_select(callback: CallbackQuery, state: FSMContext):
-    """Обработчик выбора БД"""
-    selected_db = callback.data.split(":")[1]
-
-    # Проверяем существование файла
-    db_path = DB_ROOT_HOST / selected_db
-    if not db_path.exists():
-        await callback.answer("❌ Базу даних не знайдено", show_alert=True)
-        return
-
-    # Сохраняем выбор в FSM state
-    await state.update_data(current_db=selected_db)
-
-    chat_name = selected_db.replace('.db', '')
-    await callback.message.edit_text(
-        f"✅ Обрано чат: {chat_name}\n\n"
-        f"Тепер ви можете ставити запитання про цей чат.\n"
-        f"Для зміни чату використовуйте /chats"
-    )
-    await callback.answer()
+# Команда /chats видалена — бот працює з одним чатом
 
 
 @dp.callback_query(F.data.startswith("cancel_request:"))
@@ -536,32 +499,7 @@ async def on_cancel_request(callback: CallbackQuery):
         await callback.answer("Запит вже завершено", show_alert=False)
 
 
-@dp.message(Command("current"))
-async def cmd_current(message: Message, state: FSMContext):
-    """Команда /current — показать текущий выбранный чат"""
-    user_data = await state.get_data()
-    current_db = user_data.get("current_db")
-
-    if not current_db:
-        await message.answer(
-            "⚠️ Чат не обрано.\n\n"
-            "Використовуйте /chats щоб обрати базу даних."
-        )
-        return
-
-    chat_name = current_db.replace('.db', '')
-    db_path = DB_ROOT_HOST / current_db
-
-    if db_path.exists():
-        size_mb = round(db_path.stat().st_size / (1024 * 1024), 2)
-        await message.answer(
-            f"📊 Поточний чат: {chat_name}\n"
-            f"   Розмір БД: {size_mb} MB\n\n"
-            f"Для зміни використовуйте /chats"
-        )
-    else:
-        await message.answer(f"⚠️ БД {current_db} не знайдено. Оберіть інший чат: /chats")
-        await state.update_data(current_db=None)
+# Команда /current видалена — бот працює з одним чатом
 
 
 @dp.message(F.text)
@@ -573,21 +511,23 @@ async def handle_query(message: Message, state: FSMContext):
         await message.answer("❌ Будь ласка, надішліть непорожній запит.")
         return
 
-    # Получаем текущий выбранный чат
+    # Отримуємо поточний чат (автовибір якщо не обрано)
     user_data = await state.get_data()
     current_db = user_data.get("current_db")
 
     if not current_db:
-        await message.answer(
-            "⚠️ Чат не обрано!\n\n"
-            "Спочатку оберіть чат через /chats"
-        )
-        return
+        # Автоматично обираємо першу доступну базу
+        databases = get_available_databases()
+        if not databases:
+            await message.answer("❌ Немає доступних баз даних.")
+            return
+        current_db = databases[0]["filename"]
+        await state.update_data(current_db=current_db)
 
-    # Проверяем существование БД
+    # Перевіряємо існування БД
     db_path = DB_ROOT_HOST / current_db
     if not db_path.exists():
-        await message.answer(f"❌ Базу даних {current_db} не знайдено.\nОберіть інший чат: /chats")
+        await message.answer("❌ Базу даних не знайдено.")
         await state.update_data(current_db=None)
         return
 
