@@ -238,28 +238,28 @@ import threading
 import queue
 from typing import Callable
 
-# Этапы анализа для отображения прогресса
+# Етапи аналізу для відображення прогресу
 ANALYSIS_STAGES = [
-    (5, "🔍 Анализирую запрос..."),
-    (15, "📊 Выполняю SQL-запросы..."),
-    (30, "🤔 Обрабатываю данные..."),
-    (60, "✏️ Формирую ответ..."),
-    (120, "📝 Финальная обработка..."),
+    (5, "🔍 Аналізую запит..."),
+    (15, "📊 Виконую SQL-запити..."),
+    (30, "🤔 Обробляю дані..."),
+    (60, "✏️ Формую відповідь..."),
+    (120, "📝 Фінальна обробка..."),
 ]
 
 
 def get_stage_status(elapsed_seconds: int) -> str:
-    """Возвращает статус на основе прошедшего времени."""
+    """Повертає статус на основі часу, що минув."""
     for threshold, status in ANALYSIS_STAGES:
         if elapsed_seconds < threshold:
             return status
-    return "⏳ Почти готово..."
+    return "⏳ Майже готово..."
 
 
 def get_cancel_keyboard(status_msg_id: int) -> InlineKeyboardMarkup:
     """Создаёт клавиатуру с кнопкой отмены."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_request:{status_msg_id}")]
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data=f"cancel_request:{status_msg_id}")]
     ])
 
 
@@ -432,16 +432,16 @@ def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> s
 async def cmd_start(message: Message, state: FSMContext):
     """Команда /start"""
     welcome_text = """
-👋 Добро пожаловать в ChatGeist Multi-Chat Bot!
+👋 Ласкаво просимо до ChatGeist Multi-Chat Bot!
 
-Этот бот анализирует историю Telegram-чатов с помощью AI.
+Цей бот аналізує історію Telegram-чатів за допомогою AI.
 
-📋 Команды:
-  /chats — выбрать чат для анализа
-  /current — показать текущий выбранный чат
-  /help — справка
+📋 Команди:
+  /chats — обрати чат для аналізу
+  /current — показати поточний обраний чат
+  /help — довідка
 
-💡 Выберите чат через /chats, затем задавайте вопросы!
+💡 Оберіть чат через /chats, потім ставте запитання!
     """
     await message.answer(welcome_text)
 
@@ -450,24 +450,24 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_help(message: Message):
     """Команда /help"""
     help_text = """
-📖 Справка по боту
+📖 Довідка по боту
 
-🔹 /chats — показать список доступных чатов
-🔹 /current — какой чат сейчас выбран
-🔹 /start — приветствие
+🔹 /chats — показати список доступних чатів
+🔹 /current — який чат зараз обрано
+🔹 /start — привітання
 
-💡 Как пользоваться:
-1. Выберите чат через /chats
-2. Задайте вопрос текстом
-3. Для уточнения — ответьте на сообщение бота
+💡 Як користуватися:
+1. Оберіть чат через /chats
+2. Поставте запитання текстом
+3. Для уточнення — дайте відповідь на повідомлення бота
 
-📝 Примеры вопросов:
-• Сколько всего сообщений?
-• Кто самый активный участник?
-• О чём говорили вчера?
-• Найди сообщения про Python
+📝 Приклади запитань:
+• Скільки всього повідомлень?
+• Хто найактивніший учасник?
+• Про що говорили вчора?
+• Знайди повідомлення про Python
 
-🔒 Безопасность: все запросы обрабатываются в изолированном Docker-контейнере.
+🔒 Безпека: всі запити обробляються в ізольованому Docker-контейнері.
     """
     await message.answer(help_text)
 
@@ -479,9 +479,9 @@ async def cmd_chats(message: Message):
 
     if not databases:
         await message.answer(
-            "❌ Нет доступных баз данных.\n\n"
-            f"Убедитесь, что папка `{DB_ROOT_HOST}/` содержит .db файлы.\n"
-            "Используйте `python update_manager.py` для загрузки чатов."
+            "❌ Немає доступних баз даних.\n\n"
+            f"Переконайтеся, що папка `{DB_ROOT_HOST}/` містить .db файли.\n"
+            "Використовуйте `python update_manager.py` для завантаження чатів."
         )
         return
 
@@ -492,7 +492,7 @@ async def cmd_chats(message: Message):
 
     builder.adjust(1)  # По 1 кнопке в ряд
 
-    text = f"📂 Доступно баз данных: {len(databases)}\n\nВыберите чат для анализа:"
+    text = f"📂 Доступно баз даних: {len(databases)}\n\nОберіть чат для аналізу:"
     await message.answer(text, reply_markup=builder.as_markup())
 
 
@@ -504,7 +504,7 @@ async def on_db_select(callback: CallbackQuery, state: FSMContext):
     # Проверяем существование файла
     db_path = DB_ROOT_HOST / selected_db
     if not db_path.exists():
-        await callback.answer("❌ База данных не найдена", show_alert=True)
+        await callback.answer("❌ Базу даних не знайдено", show_alert=True)
         return
 
     # Сохраняем выбор в FSM state
@@ -512,9 +512,9 @@ async def on_db_select(callback: CallbackQuery, state: FSMContext):
 
     chat_name = selected_db.replace('.db', '')
     await callback.message.edit_text(
-        f"✅ Выбран чат: {chat_name}\n\n"
-        f"Теперь вы можете задавать вопросы об этом чате.\n"
-        f"Для смены чата используйте /chats"
+        f"✅ Обрано чат: {chat_name}\n\n"
+        f"Тепер ви можете ставити запитання про цей чат.\n"
+        f"Для зміни чату використовуйте /chats"
     )
     await callback.answer()
 
@@ -525,15 +525,15 @@ async def on_cancel_request(callback: CallbackQuery):
     try:
         msg_id = int(callback.data.split(":")[1])
     except (ValueError, IndexError):
-        await callback.answer("❌ Ошибка отмены", show_alert=True)
+        await callback.answer("❌ Помилка скасування", show_alert=True)
         return
 
     if msg_id in active_requests:
         active_requests[msg_id]["cancelled"] = True
-        await callback.answer("⏹ Отмена запроса...")
+        await callback.answer("⏹ Скасування запиту...")
         logger.info(f"Пользователь запросил отмену запроса {msg_id}")
     else:
-        await callback.answer("Запрос уже завершён", show_alert=False)
+        await callback.answer("Запит вже завершено", show_alert=False)
 
 
 @dp.message(Command("current"))
@@ -544,8 +544,8 @@ async def cmd_current(message: Message, state: FSMContext):
 
     if not current_db:
         await message.answer(
-            "⚠️ Чат не выбран.\n\n"
-            "Используйте /chats чтобы выбрать базу данных."
+            "⚠️ Чат не обрано.\n\n"
+            "Використовуйте /chats щоб обрати базу даних."
         )
         return
 
@@ -555,12 +555,12 @@ async def cmd_current(message: Message, state: FSMContext):
     if db_path.exists():
         size_mb = round(db_path.stat().st_size / (1024 * 1024), 2)
         await message.answer(
-            f"📊 Текущий чат: {chat_name}\n"
-            f"   Размер БД: {size_mb} MB\n\n"
-            f"Для смены используйте /chats"
+            f"📊 Поточний чат: {chat_name}\n"
+            f"   Розмір БД: {size_mb} MB\n\n"
+            f"Для зміни використовуйте /chats"
         )
     else:
-        await message.answer(f"⚠️ БД {current_db} не найдена. Выберите другой чат: /chats")
+        await message.answer(f"⚠️ БД {current_db} не знайдено. Оберіть інший чат: /chats")
         await state.update_data(current_db=None)
 
 
@@ -570,7 +570,7 @@ async def handle_query(message: Message, state: FSMContext):
     user_query = message.text.strip()
 
     if not user_query:
-        await message.answer("❌ Пожалуйста, отправьте непустой запрос.")
+        await message.answer("❌ Будь ласка, надішліть непорожній запит.")
         return
 
     # Получаем текущий выбранный чат
@@ -579,23 +579,23 @@ async def handle_query(message: Message, state: FSMContext):
 
     if not current_db:
         await message.answer(
-            "⚠️ Чат не выбран!\n\n"
-            "Сначала выберите чат через /chats"
+            "⚠️ Чат не обрано!\n\n"
+            "Спочатку оберіть чат через /chats"
         )
         return
 
     # Проверяем существование БД
     db_path = DB_ROOT_HOST / current_db
     if not db_path.exists():
-        await message.answer(f"❌ База данных {current_db} не найдена.\nВыберите другой чат: /chats")
+        await message.answer(f"❌ Базу даних {current_db} не знайдено.\nОберіть інший чат: /chats")
         await state.update_data(current_db=None)
         return
 
     # Проверяем Docker контейнер
     if not check_docker_container():
         await message.answer(
-            "❌ Docker контейнер не запущен.\n\n"
-            "Запустите: `docker compose up -d`"
+            "❌ Docker контейнер не запущено.\n\n"
+            "Запустіть: `docker compose up -d`"
         )
         return
 
@@ -617,12 +617,12 @@ async def handle_query(message: Message, state: FSMContext):
 
     if is_reply and history:
         status_msg = await message.answer(
-            f"🔄 Анализирую [{chat_name}]{skill_label} с учётом контекста...",
+            f"🔄 Аналізую [{chat_name}]{skill_label} з урахуванням контексту...",
             reply_markup=get_cancel_keyboard(0)  # Временный ID, обновим ниже
         )
     else:
         status_msg = await message.answer(
-            f"🔄 Анализирую [{chat_name}]{skill_label}, подождите...",
+            f"🔄 Аналізую [{chat_name}]{skill_label}, зачекайте...",
             reply_markup=get_cancel_keyboard(0)  # Временный ID, обновим ниже
         )
 
@@ -650,10 +650,10 @@ async def handle_query(message: Message, state: FSMContext):
         else:
             logger.info(f"Генерирую PDF (ответ {len(report)} > 2500)")
             # Генерируем PDF для длинных ответов
-            pdf_buffer = generate_pdf(report, title=f"Отчёт: {chat_name}")
+            pdf_buffer = generate_pdf(report, title=f"Звіт: {chat_name}")
 
             # Превью (первые 500 символов)
-            preview = report[:500] + "...\n\n📄 Полный ответ в PDF файле:"
+            preview = report[:500] + "...\n\n📄 Повна відповідь у PDF файлі:"
             await status_msg.edit_text(preview, reply_markup=None)
 
             # Отправляем PDF
@@ -663,27 +663,27 @@ async def handle_query(message: Message, state: FSMContext):
             )
             await message.answer_document(
                 document=pdf_file,
-                caption="📊 Полный отчёт"
+                caption="📊 Повний звіт"
             )
 
     except asyncio.CancelledError:
         logger.info(f"Запрос отменён пользователем (msg_id={status_msg.message_id})")
-        await status_msg.edit_text("⏹ Запрос отменён.", reply_markup=None)
+        await status_msg.edit_text("⏹ Запит скасовано.", reply_markup=None)
 
     except subprocess.TimeoutExpired:
         logger.error("Таймаут при обработке запроса")
-        await status_msg.edit_text("❌ Превышено время ожидания (20 минут).\nПопробуйте упростить запрос.", reply_markup=None)
+        await status_msg.edit_text("❌ Перевищено час очікування (20 хвилин).\nСпробуйте спростити запит.", reply_markup=None)
 
     except subprocess.CalledProcessError as e:
         error_output = e.stderr if e.stderr else e.stdout
         if not error_output:
             error_output = f"Exit code: {e.returncode}"
         logger.error(f"Ошибка Claude CLI: {error_output}")
-        await status_msg.edit_text(f"❌ Ошибка API Claude:\n\n{error_output[:500]}", reply_markup=None)
+        await status_msg.edit_text(f"❌ Помилка API Claude:\n\n{error_output[:500]}", reply_markup=None)
 
     except Exception as e:
         logger.error(f"Ошибка: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Ошибка:\n\n{str(e)[:500]}", reply_markup=None)
+        await status_msg.edit_text(f"❌ Помилка:\n\n{str(e)[:500]}", reply_markup=None)
 
 
 # ============================================================================
