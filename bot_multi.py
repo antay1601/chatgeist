@@ -352,7 +352,7 @@ async def ask_claude_streaming(
         # Первое обновление сразу
         if status_callback:
             try:
-                await status_callback("🔍 Анализирую запрос...\n⏱ 0 сек")
+                await status_callback("🔍 Аналізую запит...\n⏱ 0 сек")
                 logger.info("Статус обновлён: начало")
             except Exception as e:
                 logger.warning(f"Не удалось обновить статус (начало): {e}")
