@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 /**
- * Скрипт для автоматичного оновлення OAuth токена Claude через headless браузер.
- * Обходить Cloudflare JavaScript challenge використовуючи Puppeteer.
+ * Скрипт для автоматического обновления OAuth токена Claude через headless браузер.
+ * Обходит Cloudflare JavaScript challenge используя Puppeteer.
  *
- * Запускається по cron кожну годину.
+ * Запускается по cron каждый час.
  */
 
 const fs = require('fs');
-const path = require('path');
 const puppeteer = require('puppeteer');
 
-// Конфігурація
+// Конфигурация
 const CREDENTIALS_FILE = process.env.CREDENTIALS_FILE || '/home/node/.claude/.credentials.json';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const TOKEN_URL = 'https://console.anthropic.com/api/oauth/token';
-const REFRESH_THRESHOLD_MS = 30 * 60 * 1000; // 30 хвилин до закінчення
+const REFRESH_THRESHOLD_MS = 30 * 60 * 1000; // 30 минут до истечения
 
 function log(message) {
     console.log(`[token-refresh] ${new Date().toISOString()} ${message}`);
@@ -70,61 +69,102 @@ async function refreshTokenWithBrowser(refreshToken) {
     try {
         const page = await browser.newPage();
 
-        // Встановлюємо реалістичний User-Agent
+        // Устанавливаем реалистичный User-Agent
         await page.setUserAgent(
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
             '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         );
 
-        // Емулюємо реальний браузер
+        // Эмулируем реальный браузер
         await page.setViewport({ width: 1920, height: 1080 });
         await page.setExtraHTTPHeaders({
             'Accept-Language': 'en-US,en;q=0.9'
         });
 
-        // Спочатку відвідуємо головну сторінку для отримання cookies
-        log('Visiting main page to get cookies...');
-        await page.goto('https://console.anthropic.com', {
-            waitUntil: 'networkidle0',
-            timeout: 30000
-        });
+        // Перехватываем запросы для отправки POST
+        await page.setRequestInterception(true);
 
-        // Чекаємо поки Cloudflare пропустить (до 10 секунд)
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        let tokenResponse = null;
 
-        // Тепер робимо POST запит для оновлення токена
-        log('Sending token refresh request...');
-
-        const response = await page.evaluate(async (url, clientId, refreshToken) => {
-            try {
-                const res = await fetch(url, {
+        page.on('request', async (request) => {
+            if (request.url() === TOKEN_URL && request.method() === 'POST') {
+                // Это наш запрос на обновление токена - пропускаем
+                request.continue();
+            } else if (request.url() === TOKEN_URL) {
+                // Модифицируем GET запрос в POST для обновления токена
+                request.continue({
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
+                    postData: JSON.stringify({
                         grant_type: 'refresh_token',
                         refresh_token: refreshToken,
-                        client_id: clientId
-                    })
+                        client_id: CLIENT_ID
+                    }),
+                    headers: {
+                        ...request.headers(),
+                        'Content-Type': 'application/json'
+                    }
                 });
-
-                const data = await res.json();
-                return { ok: res.ok, status: res.status, data };
-            } catch (err) {
-                return { ok: false, error: err.message };
+            } else {
+                request.continue();
             }
-        }, TOKEN_URL, CLIENT_ID, refreshToken);
+        });
 
-        if (!response.ok) {
-            throw new Error(`Token refresh failed: ${JSON.stringify(response)}`);
+        page.on('response', async (response) => {
+            if (response.url() === TOKEN_URL) {
+                try {
+                    tokenResponse = await response.json();
+                    log(`Got token response: ${response.status()}`);
+                } catch (e) {
+                    log(`Failed to parse token response: ${e.message}`);
+                }
+            }
+        });
+
+        // Сначала посещаем главную страницу для получения cookies и обхода Cloudflare
+        log('Visiting main page to get cookies...');
+        await page.goto('https://console.anthropic.com', {
+            waitUntil: 'networkidle2',
+            timeout: 60000
+        });
+
+        // Ждём пока Cloudflare пропустит
+        log('Waiting for Cloudflare...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        // Проверяем, прошли ли Cloudflare (ищем признаки challenge)
+        const pageContent = await page.content();
+        if (pageContent.includes('Just a moment') || pageContent.includes('Checking your browser')) {
+            log('Cloudflare challenge detected, waiting more...');
+            await new Promise(resolve => setTimeout(resolve, 10000));
         }
 
-        if (!response.data.access_token) {
-            throw new Error(`No access_token in response: ${JSON.stringify(response.data)}`);
+        // Теперь делаем POST запрос для обновления токена
+        log('Sending token refresh request...');
+
+        // Переходим на URL токена - запрос будет перехвачен и модифицирован
+        await page.goto(TOKEN_URL, {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+        }).catch(() => {
+            // Игнорируем ошибку навигации - нам нужен только ответ
+        });
+
+        // Ждём ответа
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        if (!tokenResponse) {
+            throw new Error('No response received from token endpoint');
         }
 
-        return response.data;
+        if (tokenResponse.error) {
+            throw new Error(`Token refresh failed: ${tokenResponse.error_description || tokenResponse.error}`);
+        }
+
+        if (!tokenResponse.access_token) {
+            throw new Error(`No access_token in response: ${JSON.stringify(tokenResponse)}`);
+        }
+
+        return tokenResponse;
 
     } finally {
         await browser.close();
@@ -133,34 +173,34 @@ async function refreshTokenWithBrowser(refreshToken) {
 
 async function main() {
     try {
-        // Завантажуємо credentials
+        // Загружаем credentials
         const credentials = await loadCredentials();
 
         if (!credentials.claudeAiOauth?.refreshToken) {
             throw new Error('No refresh token found in credentials');
         }
 
-        // Перевіряємо чи потрібно оновлювати
+        // Проверяем нужно ли обновлять
         if (!isTokenExpiringSoon(credentials)) {
             process.exit(0);
         }
 
-        // Оновлюємо токен через браузер
+        // Обновляем токен через браузер
         const tokenData = await refreshTokenWithBrowser(credentials.claudeAiOauth.refreshToken);
 
-        // Оновлюємо credentials
+        // Обновляем credentials
         credentials.claudeAiOauth.accessToken = tokenData.access_token;
 
-        // Розраховуємо новий час закінчення
-        const expiresIn = tokenData.expires_in || 28800; // 8 годин за замовчуванням
+        // Рассчитываем новое время истечения
+        const expiresIn = tokenData.expires_in || 28800; // 8 часов по умолчанию
         credentials.claudeAiOauth.expiresAt = Date.now() + (expiresIn * 1000);
 
-        // Оновлюємо refresh token якщо отримали новий
+        // Обновляем refresh token если получили новый
         if (tokenData.refresh_token) {
             credentials.claudeAiOauth.refreshToken = tokenData.refresh_token;
         }
 
-        // Зберігаємо
+        // Сохраняем
         saveCredentials(credentials);
 
         const expiryDate = new Date(credentials.claudeAiOauth.expiresAt).toISOString();
