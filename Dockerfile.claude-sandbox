@@ -1,34 +1,12 @@
 # Dockerfile для безопасного запуска Claude CLI в изолированном окружении
 FROM node:20-slim
 
-# Устанавливаем минимальный набор утилит, cron и зависимости для Puppeteer/Chromium
+# Устанавливаем минимальный набор утилит и cron
 RUN apt-get update && apt-get install -y \
     sqlite3 \
     cron \
     curl \
     python3 \
-    # Зависимости для Puppeteer/Chromium
-    wget \
-    gnupg \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем рабочую директорию и директорию для Claude
@@ -38,16 +16,12 @@ RUN mkdir -p /home/node/.claude && chown node:node /home/node/.claude
 # Устанавливаем Claude CLI глобально через npm
 RUN npm install -g @anthropic-ai/claude-code
 
-# Создаем папку для скрипта обновления токена и устанавливаем Puppeteer локально
-COPY token-refresh/package.json /opt/token-refresh/package.json
+# Копируем скрипт обновления токена (использует только curl, без внешних зависимостей)
 COPY token-refresh/refresh_token_browser.js /opt/token-refresh/refresh_token_browser.js
-WORKDIR /opt/token-refresh
-ENV PUPPETEER_CACHE_DIR=/opt/token-refresh/.cache/puppeteer
-RUN npm install --production
 RUN chown -R node:node /opt/token-refresh
 
 # Настраиваем cron для обновления токена каждый час
-RUN echo "0 * * * * root cd /opt/token-refresh && CREDENTIALS_FILE=/home/node/.claude/.credentials.json node refresh_token_browser.js >> /var/log/token_refresh.log 2>&1" > /etc/cron.d/token-refresh
+RUN echo "0 * * * * root CREDENTIALS_FILE=/home/node/.claude/.credentials.json node /opt/token-refresh/refresh_token_browser.js >> /var/log/token_refresh.log 2>&1" > /etc/cron.d/token-refresh
 RUN chmod 0644 /etc/cron.d/token-refresh
 RUN touch /var/log/token_refresh.log && chmod 666 /var/log/token_refresh.log
 
