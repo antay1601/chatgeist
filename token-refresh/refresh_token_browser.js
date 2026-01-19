@@ -81,45 +81,6 @@ async function refreshTokenWithBrowser(refreshToken) {
             'Accept-Language': 'en-US,en;q=0.9'
         });
 
-        // Перехватываем запросы для отправки POST
-        await page.setRequestInterception(true);
-
-        let tokenResponse = null;
-
-        page.on('request', async (request) => {
-            if (request.url() === TOKEN_URL && request.method() === 'POST') {
-                // Это наш запрос на обновление токена - пропускаем
-                request.continue();
-            } else if (request.url() === TOKEN_URL) {
-                // Модифицируем GET запрос в POST для обновления токена
-                request.continue({
-                    method: 'POST',
-                    postData: JSON.stringify({
-                        grant_type: 'refresh_token',
-                        refresh_token: refreshToken,
-                        client_id: CLIENT_ID
-                    }),
-                    headers: {
-                        ...request.headers(),
-                        'Content-Type': 'application/json'
-                    }
-                });
-            } else {
-                request.continue();
-            }
-        });
-
-        page.on('response', async (response) => {
-            if (response.url() === TOKEN_URL) {
-                try {
-                    tokenResponse = await response.json();
-                    log(`Got token response: ${response.status()}`);
-                } catch (e) {
-                    log(`Failed to parse token response: ${e.message}`);
-                }
-            }
-        });
-
         // Сначала посещаем главную страницу для получения cookies и обхода Cloudflare
         log('Visiting main page to get cookies...');
         await page.goto('https://console.anthropic.com', {
@@ -132,39 +93,63 @@ async function refreshTokenWithBrowser(refreshToken) {
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         // Проверяем, прошли ли Cloudflare (ищем признаки challenge)
-        const pageContent = await page.content();
+        let pageContent = await page.content();
         if (pageContent.includes('Just a moment') || pageContent.includes('Checking your browser')) {
             log('Cloudflare challenge detected, waiting more...');
             await new Promise(resolve => setTimeout(resolve, 10000));
+            pageContent = await page.content();
         }
 
-        // Теперь делаем POST запрос для обновления токена
-        log('Sending token refresh request...');
-
-        // Переходим на URL токена - запрос будет перехвачен и модифицирован
-        await page.goto(TOKEN_URL, {
-            waitUntil: 'networkidle2',
-            timeout: 30000
-        }).catch(() => {
-            // Игнорируем ошибку навигации - нам нужен только ответ
-        });
-
-        // Ждём ответа
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        if (!tokenResponse) {
-            throw new Error('No response received from token endpoint');
+        // Проверяем что мы прошли Cloudflare
+        if (pageContent.includes('Just a moment')) {
+            throw new Error('Failed to pass Cloudflare challenge');
         }
 
-        if (tokenResponse.error) {
-            throw new Error(`Token refresh failed: ${tokenResponse.error_description || tokenResponse.error}`);
+        log('Cloudflare passed, sending token refresh request...');
+
+        // Используем CDP для выполнения fetch запроса напрямую
+        const client = await page.target().createCDPSession();
+
+        // Делаем POST запрос через page.evaluate после прохождения Cloudflare
+        const response = await page.evaluate(async (url, clientId, token) => {
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        grant_type: 'refresh_token',
+                        refresh_token: token,
+                        client_id: clientId
+                    }),
+                    credentials: 'include'
+                });
+
+                const text = await res.text();
+                try {
+                    const data = JSON.parse(text);
+                    return { ok: res.ok, status: res.status, data };
+                } catch (e) {
+                    return { ok: false, status: res.status, error: `Invalid JSON: ${text.substring(0, 200)}` };
+                }
+            } catch (err) {
+                return { ok: false, error: err.message };
+            }
+        }, TOKEN_URL, CLIENT_ID, refreshToken);
+
+        log(`Token response: status=${response.status}, ok=${response.ok}`);
+
+        if (!response.ok) {
+            const errorMsg = response.error || response.data?.error_description || response.data?.error || JSON.stringify(response);
+            throw new Error(`Token refresh failed: ${errorMsg}`);
         }
 
-        if (!tokenResponse.access_token) {
-            throw new Error(`No access_token in response: ${JSON.stringify(tokenResponse)}`);
+        if (!response.data?.access_token) {
+            throw new Error(`No access_token in response: ${JSON.stringify(response.data)}`);
         }
 
-        return tokenResponse;
+        return response.data;
 
     } finally {
         await browser.close();
