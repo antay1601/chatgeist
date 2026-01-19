@@ -142,13 +142,33 @@ docker exec claude-sandbox claude --print 'say OK'
 docker exec claude-sandbox node /opt/token-refresh/refresh_token_browser.js
 ```
 
+### Мониторинг возраста refresh_token
+
+Скрипт автоматически отслеживает время с последней синхронизации:
+
+```bash
+# В логах будут сообщения:
+# OK (< 25 дней):
+[token-refresh] Refresh token OK. Synced 5 days ago, ~25 days left.
+
+# WARNING (25-30 дней):
+[token-refresh] WARNING: Refresh token expires in ~3 days (synced 27 days ago).
+[token-refresh] WARNING: Plan to run sync_to_server.sh from Mac soon.
+
+# ERROR (> 30 дней):
+[token-refresh] ERROR: REFRESH TOKEN EXPIRED! Last synced 32 days ago.
+[token-refresh] ERROR: Run sync_to_server.sh from Mac immediately!
+```
+
 ### Типичные ошибки
 
 | Ошибка | Причина | Решение |
 |--------|---------|---------|
-| `401 authentication_error` | Access token истёк | Синхронизировать с Mac |
-| `not_found_error` | Refresh token истёк | На Mac: `claude login`, затем синхронизировать |
-| `Token still valid for X minutes` | Токен ещё действителен | Всё в порядке, обновление не требуется |
+| `401 authentication_error` | Access token истёк | Подождать — cron обновит автоматически |
+| `not_found_error` | Refresh token истёк | На Mac: `claude login`, затем `./sync_to_server.sh` |
+| `Token still valid for X minutes` | Токен ещё действителен | Всё в порядке |
+| `lastSyncedAt not set` | Первая синхронизация | Запустить `./sync_to_server.sh` |
+| `WARNING: Refresh token expires in ~X days` | Скоро истечёт | Запланировать синхронизацию |
 
 ---
 

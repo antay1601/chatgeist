@@ -62,6 +62,17 @@ log "Шаг 2: Отправка на сервер $SERVER_HOST..."
 # Извлекаем access token для .env
 ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDENTIALS_FILE')).get('claudeAiOauth', {}).get('accessToken', ''))")
 
+# Добавляем lastSyncedAt для отслеживания возраста refresh_token
+log "Добавляем lastSyncedAt в credentials..."
+python3 << EOF
+import json
+with open('$CREDENTIALS_FILE', 'r') as f:
+    creds = json.load(f)
+creds['claudeAiOauth']['lastSyncedAt'] = int(__import__('time').time() * 1000)
+with open('$CREDENTIALS_FILE', 'w') as f:
+    json.dump(creds, f, indent=2)
+EOF
+
 # Создаём директорию на сервере если не существует
 ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "mkdir -p $SERVER_PATH/.claude-docker"
 
