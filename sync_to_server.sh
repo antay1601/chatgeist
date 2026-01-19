@@ -59,6 +59,9 @@ fi
 
 log "Шаг 2: Отправка на сервер $SERVER_HOST..."
 
+# Извлекаем access token для .env
+ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDENTIALS_FILE')).get('claudeAiOauth', {}).get('accessToken', ''))")
+
 # Создаём директорию на сервере если не существует
 ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "mkdir -p $SERVER_PATH/.claude-docker"
 
@@ -68,10 +71,13 @@ scp $SSH_OPTS "$CREDENTIALS_FILE" "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/.claud
 # Устанавливаем права (UID 1000 = node user в контейнере, владелец bot)
 ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "chown bot:bot $SERVER_PATH/.claude-docker/credentials.json && chmod 600 $SERVER_PATH/.claude-docker/credentials.json"
 
-log "Шаг 3: Перезапуск Docker на сервере..."
+# Обновляем .env с токеном (Claude CLI использует переменную окружения)
+ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && grep -v CLAUDE_CODE_OAUTH_TOKEN .env > .env.tmp 2>/dev/null || true; mv .env.tmp .env 2>/dev/null || true; echo 'CLAUDE_CODE_OAUTH_TOKEN=$ACCESS_TOKEN' >> .env"
 
-ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose restart claude-sandbox" 2>/dev/null || \
-ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker-compose restart claude-sandbox" 2>/dev/null || \
+log "Шаг 3: Пересоздание Docker контейнера..."
+
+ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose down && docker compose up -d" 2>/dev/null || \
+ssh $SSH_OPTS "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker-compose down && docker-compose up -d" 2>/dev/null || \
 log "Docker не перезапущен (возможно, не запущен). Перезапустите вручную."
 
 log "Готово! Токен синхронизирован."
