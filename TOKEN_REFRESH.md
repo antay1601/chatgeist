@@ -73,13 +73,16 @@ curl -X POST "https://console.anthropic.com/api/oauth/token" \
 # Результат: HTML страница "Just a moment..." от Cloudflare
 ```
 
-### Текущая архитектура на сервере
+### Текущая архитектура на сервере (с Puppeteer)
 
 ```
 Docker контейнер (claude-sandbox)
 ├── /home/node/.claude/.credentials.json  <- монтируется с хоста
-├── /usr/local/bin/refresh_token.sh       <- скрипт обновления (не работает из-за Cloudflare)
-└── cron (каждый час)                     <- запускает refresh_token.sh
+├── /opt/token-refresh/                   <- Node.js скрипт с Puppeteer
+│   ├── package.json
+│   ├── refresh_token_browser.js          <- обходит Cloudflare через headless Chrome
+│   └── node_modules/puppeteer/
+└── cron (каждый час)                     <- запускает refresh_token_browser.js
 
 Хост (сервер)
 └── /home/bot/chatgeist/.claude-docker/credentials.json
@@ -125,23 +128,23 @@ systemctl restart chatgeist-bot
 - Требует работающий Mac
 - Требует SSH ключ без пароля
 
-### Вариант 3: Headless браузер на сервере
+### Вариант 3: Headless браузер на сервере (РЕАЛИЗОВАНО)
 
-Установить Puppeteer/Playwright для обхода Cloudflare.
+Puppeteer установлен локально в `/opt/token-refresh/` для обхода Cloudflare.
 
 ```bash
-# Установить в Docker
-npm install puppeteer
+# Ручной запуск обновления токена
+docker exec claude-sandbox bash -c "cd /opt/token-refresh && node refresh_token_browser.js"
 
-# Скрипт обновления через headless Chrome
-node refresh_token_browser.js
+# Проверить логи
+docker exec claude-sandbox cat /var/log/token_refresh.log
 ```
 
 **Плюсы:**
 - Полностью автономно на сервере
+- Автоматическое обновление каждый час через cron
 
 **Минусы:**
-- Сложная настройка
 - Большой размер Docker образа (+400MB)
 - Может сломаться при изменении Cloudflare
 
@@ -191,9 +194,25 @@ journalctl -u chatgeist-bot -f
 
 ## Итог
 
-| Метод | Автономность | Сложность | Рекомендация |
-|-------|-------------|-----------|--------------|
-| API Key | Полная | Низкая | Лучший вариант |
-| Синхро с Mac | Частичная | Средняя | Если нет API Key |
-| Headless браузер | Полная | Высокая | Для продвинутых |
-| Ручное | Нет | Низкая | Временное решение |
+| Метод | Автономность | Сложность | Статус |
+|-------|-------------|-----------|--------|
+| API Key | Полная | Низкая | Альтернатива |
+| Синхро с Mac | Частичная | Средняя | Альтернатива |
+| **Headless браузер** | **Полная** | **Средняя** | **АКТИВНО** |
+| Ручное | Нет | Низкая | Резерв |
+
+---
+
+## Деплой на сервер
+
+После изменений пересобрать образ:
+
+```bash
+cd /home/bot/chatgeist
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+
+# Проверить запуск
+docker logs claude-sandbox
+```
