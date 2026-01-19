@@ -1,218 +1,220 @@
 # Обновление OAuth токена Claude
 
-## Как работает авторизация Claude CLI
+## Как работает авторизация
 
-### Структура credentials
+### Структура токенов
 
-Claude CLI хранит OAuth credentials в файле `~/.claude/.credentials.json`:
+Claude CLI использует OAuth для авторизации:
 
-```json
-{
-  "claudeAiOauth": {
-    "accessToken": "sk-ant-oat01-...",     // Токен для API запросов (живёт ~8 часов)
-    "refreshToken": "sk-ant-ort01-...",    // Токен для обновления (живёт дольше)
-    "expiresAt": 1766698175473,            // Время истечения в миллисекундах
-    "scopes": [...],
-    "subscriptionType": "pro",
-    "rateLimitTier": "..."
-  }
-}
-```
+| Токен | Время жизни | Назначение |
+|-------|-------------|------------|
+| Access Token | ~8 часов | Авторизация API запросов |
+| Refresh Token | ~30 дней | Получение нового Access Token |
 
-### Время жизни токенов
+### Где хранятся токены
 
-- **Access Token**: ~8 часов
-- **Refresh Token**: несколько недель/месяцев
+**На Mac (локальная разработка):**
+- macOS Keychain → `Claude Code-credentials`
+- Claude CLI автоматически обновляет токены через браузер
+
+**На сервере Ubuntu:**
+- Переменная окружения `CLAUDE_CODE_OAUTH_TOKEN` в `.env`
+- Файл `.claude-docker/credentials.json` (для автообновления)
 
 ---
 
-## Обновление на Mac (работает)
-
-### Автоматическое (Claude CLI сам обновляет)
-
-При каждом запуске Claude CLI проверяет токен и автоматически обновляет его через браузерную сессию, используя сохранённые cookies.
-
-### Ручное обновление
-
-```bash
-# Перелогиниться (открывает браузер)
-claude logout
-claude login
-
-# Или просто запустить Claude - он сам обновит при необходимости
-claude "test"
-```
-
-### Синхронизация в файл
-
-```bash
-# Скрипт sync_claude_credentials.sh извлекает из macOS Keychain
-./sync_claude_credentials.sh
-```
-
-Keychain хранит credentials надёжнее чем файл, и Claude CLI на Mac автоматически обновляет их там.
-
----
-
-## Обновление на сервере (проблема)
-
-### Почему не работает автообновление
-
-1. **Нет браузера** - Claude CLI использует браузер для OAuth flow
-2. **Cloudflare блокирует curl** - OAuth API защищён Cloudflare JavaScript challenge
-3. **Нет Keychain** - на Linux нет macOS Keychain
-
-### Что мы пробовали
-
-```bash
-# Прямой запрос к OAuth API - блокируется Cloudflare
-curl -X POST "https://console.anthropic.com/api/oauth/token" \
-  -H "Content-Type: application/json" \
-  -d '{"grant_type":"refresh_token","refresh_token":"...","client_id":"..."}'
-
-# Результат: HTML страница "Just a moment..." от Cloudflare
-```
-
-### Текущая архитектура на сервере (с Puppeteer)
+## Текущая архитектура на сервере
 
 ```
+Хост (Ubuntu сервер)
+├── /home/bot/chatgeist/
+│   ├── .env                              ← CLAUDE_CODE_OAUTH_TOKEN (используется Claude CLI)
+│   └── .claude-docker/credentials.json   ← refresh_token (для автообновления)
+
 Docker контейнер (claude-sandbox)
-├── /home/node/.claude/.credentials.json  <- монтируется с хоста
-├── /opt/token-refresh/                   <- Node.js скрипт с Puppeteer
-│   ├── package.json
-│   ├── refresh_token_browser.js          <- обходит Cloudflare через headless Chrome
-│   └── node_modules/puppeteer/
-└── cron (каждый час)                     <- запускает refresh_token_browser.js
-
-Хост (сервер)
-└── /home/bot/chatgeist/.claude-docker/credentials.json
+├── Переменная CLAUDE_CODE_OAUTH_TOKEN    ← передаётся из .env
+├── /home/node/.claude/.credentials.json  ← монтируется для автообновления
+├── /opt/token-refresh/
+│   └── refresh_token_browser.js          ← скрипт автообновления (curl)
+└── cron (каждый час)                     ← запускает скрипт
 ```
 
 ---
 
-## Решения
+## Как работает автообновление
 
-### Вариант 1: Anthropic API Key (рекомендуется)
+### 1. Скрипт обновления токена
 
-Использовать API ключ вместо OAuth. API ключ не истекает.
+Файл: `/opt/token-refresh/refresh_token_browser.js`
+
+**Алгоритм:**
+1. Читает `credentials.json`
+2. Проверяет `expiresAt` — если до истечения > 30 минут, пропускает
+3. Делает POST запрос к `https://console.anthropic.com/api/oauth/token`:
+   ```json
+   {
+     "grant_type": "refresh_token",
+     "refresh_token": "<refresh_token>",
+     "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+   }
+   ```
+4. Получает новый `access_token` и `expires_in`
+5. Обновляет `credentials.json`
+
+**Особенность:** Используется `curl -L` для следования редиректам Cloudflare (302).
+
+### 2. Cron задача
+
+```cron
+0 * * * * root CREDENTIALS_FILE=/home/node/.claude/.credentials.json node /opt/token-refresh/refresh_token_browser.js >> /var/log/token_refresh.log 2>&1
+```
+
+Запускается каждый час в 00 минут.
+
+### 3. Проверка логов
 
 ```bash
 # На сервере
-echo "ANTHROPIC_API_KEY=sk-ant-api03-..." >> /home/bot/chatgeist/.env
-systemctl restart chatgeist-bot
-```
-
-**Плюсы:**
-- Не требует обновления
-- Не блокируется Cloudflare
-- Работает везде
-
-**Минусы:**
-- Требует платную подписку API (отдельно от Pro/Max)
-
-### Вариант 2: Синхронизация с Mac
-
-Настроить автоматическую синхронизацию credentials с Mac на сервер.
-
-**На Mac (crontab -e):**
-```bash
-# Каждые 4 часа синхронизировать
-0 */4 * * * cd /path/to/chatgeist && ./sync_claude_credentials.sh && scp .claude-docker/credentials.json bot@SERVER_IP:~/chatgeist/.claude-docker/
-```
-
-**Плюсы:**
-- Использует существующую Pro/Max подписку
-- Mac автоматически обновляет токены
-
-**Минусы:**
-- Требует работающий Mac
-- Требует SSH ключ без пароля
-
-### Вариант 3: Headless браузер на сервере (РЕАЛИЗОВАНО)
-
-Puppeteer установлен локально в `/opt/token-refresh/` для обхода Cloudflare.
-
-```bash
-# Ручной запуск обновления токена
-docker exec claude-sandbox bash -c "cd /opt/token-refresh && node refresh_token_browser.js"
-
-# Проверить логи
 docker exec claude-sandbox cat /var/log/token_refresh.log
-```
 
-**Плюсы:**
-- Полностью автономно на сервере
-- Автоматическое обновление каждый час через cron
-
-**Минусы:**
-- Большой размер Docker образа (+400MB)
-- Может сломаться при изменении Cloudflare
-
-### Вариант 4: Ручное обновление
-
-При истечении токена вручную копировать credentials с Mac.
-
-```bash
-# На Mac
-./sync_claude_credentials.sh
-cat .claude-docker/credentials.json | pbcopy
-
-# На сервере
-cat > /home/bot/chatgeist/.claude-docker/credentials.json << 'EOF'
-<вставить>
-EOF
-chown 1000:1000 /home/bot/chatgeist/.claude-docker/credentials.json
+# Последние записи
+docker exec claude-sandbox tail -20 /var/log/token_refresh.log
 ```
 
 ---
 
-## Мониторинг
+## Синхронизация с Mac
 
-### Проверить срок действия токена
+### Когда нужна синхронизация
+
+1. **Refresh token истёк** (~30 дней) — автообновление перестаёт работать
+2. **Первоначальная настройка** — токенов на сервере ещё нет
+3. **После `claude login`** — получены новые токены
+
+### Как синхронизировать
+
+На Mac:
+```bash
+cd /path/to/chatgeist
+./sync_to_server.sh
+```
+
+**Что делает скрипт:**
+1. Извлекает credentials из macOS Keychain
+2. Копирует `credentials.json` на сервер (для refresh_token)
+3. Обновляет `.env` с `CLAUDE_CODE_OAUTH_TOKEN` (для Claude CLI)
+4. Пересоздаёт Docker контейнер
+5. Проверяет работу Claude
+
+### Автоматическая синхронизация (опционально)
+
+На Mac добавить в crontab (`crontab -e`):
+```bash
+# Каждые 6 часов синхронизировать токен
+0 */6 * * * cd /path/to/chatgeist && ./sync_to_server.sh >> /tmp/sync_claude.log 2>&1
+```
+
+---
+
+## Диагностика проблем
+
+### Проверить текущий токен
 
 ```bash
-# На сервере
+# Срок действия токена
 docker exec claude-sandbox cat /home/node/.claude/.credentials.json | \
   python3 -c "import sys,json,datetime; d=json.load(sys.stdin); \
   print('Expires:', datetime.datetime.fromtimestamp(d['claudeAiOauth']['expiresAt']/1000))"
+
+# Проверить переменную окружения
+docker exec claude-sandbox printenv CLAUDE_CODE_OAUTH_TOKEN | head -c 50
 ```
 
-### Логи обновления
+### Проверить работу Claude
 
 ```bash
-docker exec claude-sandbox cat /var/log/token_refresh.log
+docker exec claude-sandbox claude --print 'say OK'
 ```
 
-### Статус бота
+### Принудительное обновление токена
 
 ```bash
-systemctl status chatgeist-bot
-journalctl -u chatgeist-bot -f
+docker exec claude-sandbox node /opt/token-refresh/refresh_token_browser.js
+```
+
+### Типичные ошибки
+
+| Ошибка | Причина | Решение |
+|--------|---------|---------|
+| `401 authentication_error` | Access token истёк | Синхронизировать с Mac |
+| `not_found_error` | Refresh token истёк | На Mac: `claude login`, затем синхронизировать |
+| `Token still valid for X minutes` | Токен ещё действителен | Всё в порядке, обновление не требуется |
+
+---
+
+## Важные файлы
+
+| Файл | Назначение |
+|------|------------|
+| `sync_to_server.sh` | Синхронизация токенов с Mac на сервер |
+| `token-refresh/refresh_token_browser.js` | Автообновление токена (curl) |
+| `docker-compose.yml` | Конфигурация контейнера (CLAUDE_CODE_OAUTH_TOKEN) |
+| `Dockerfile.claude-sandbox` | Образ с cron и скриптом обновления |
+| `.env` | Access token для Claude CLI |
+| `.claude-docker/credentials.json` | Refresh token для автообновления |
+
+---
+
+## Схема работы
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Mac (разработка)                        │
+│                                                                 │
+│  Claude CLI ←→ Keychain ←→ Anthropic OAuth                     │
+│       ↓                                                         │
+│  sync_to_server.sh                                              │
+│       ↓                                                         │
+└───────┼─────────────────────────────────────────────────────────┘
+        │ SSH + SCP
+        ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      Сервер Ubuntu                              │
+│                                                                 │
+│  .env (CLAUDE_CODE_OAUTH_TOKEN)                                │
+│  .claude-docker/credentials.json                                │
+│       ↓                                                         │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Docker: claude-sandbox                      │   │
+│  │                                                          │   │
+│  │  CLAUDE_CODE_OAUTH_TOKEN ──→ Claude CLI ──→ Anthropic   │   │
+│  │                                                          │   │
+│  │  cron (каждый час)                                       │   │
+│  │       ↓                                                  │   │
+│  │  refresh_token_browser.js                                │   │
+│  │       ↓                                                  │   │
+│  │  curl -L POST /api/oauth/token                           │   │
+│  │       ↓                                                  │   │
+│  │  Обновляет credentials.json                              │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  Telegram Bot (bot_multi.py)                                    │
+│       ↓                                                         │
+│  docker exec claude-sandbox claude --print "запрос"             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Итог
 
-| Метод | Автономность | Сложность | Статус |
-|-------|-------------|-----------|--------|
-| API Key | Полная | Низкая | Альтернатива |
-| Синхро с Mac | Частичная | Средняя | Альтернатива |
-| **Headless браузер** | **Полная** | **Средняя** | **АКТИВНО** |
-| Ручное | Нет | Низкая | Резерв |
+| Компонент | Что делает | Когда |
+|-----------|------------|-------|
+| `sync_to_server.sh` | Синхронизирует токены с Mac | Вручную или по cron |
+| `refresh_token_browser.js` | Автообновляет access_token | Каждый час (cron) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Авторизует Claude CLI | При каждом запросе |
 
----
-
-## Деплой на сервер
-
-После изменений пересобрать образ:
-
-```bash
-cd /home/bot/chatgeist
-docker compose down
-docker compose build --no-cache
-docker compose up -d
-
-# Проверить запуск
-docker logs claude-sandbox
-```
+**Важно:** При истечении refresh_token (раз в ~30 дней) нужно:
+1. На Mac выполнить `claude login`
+2. Запустить `./sync_to_server.sh`
