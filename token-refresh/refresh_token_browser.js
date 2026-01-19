@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Скрипт для автоматического обновления OAuth токена Claude через headless браузер.
- * Обходит Cloudflare JavaScript challenge используя Puppeteer.
+ * Скрипт для автоматического обновления OAuth токена Claude.
+ * Использует curl для обхода Cloudflare (следует редиректам).
  *
  * Запускается по cron каждый час.
  */
 
 const fs = require('fs');
-const puppeteer = require('puppeteer');
+const { execSync } = require('child_process');
 
 // Конфигурация
 const CREDENTIALS_FILE = process.env.CREDENTIALS_FILE || '/home/node/.claude/.credentials.json';
@@ -23,7 +23,7 @@ function error(message) {
     console.error(`[token-refresh] ${new Date().toISOString()} ERROR: ${message}`);
 }
 
-async function loadCredentials() {
+function loadCredentials() {
     try {
         const content = fs.readFileSync(CREDENTIALS_FILE, 'utf8');
         return JSON.parse(content);
@@ -51,115 +51,47 @@ function isTokenExpiringSoon(credentials) {
     return true;
 }
 
-async function refreshTokenWithBrowser(refreshToken) {
-    log('Starting headless browser for token refresh...');
+function refreshToken(refreshToken) {
+    log('Sending token refresh request via curl...');
 
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--window-size=1920x1080'
-        ]
+    const postData = JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: CLIENT_ID
     });
 
     try {
-        const page = await browser.newPage();
-
-        // Устанавливаем реалистичный User-Agent
-        await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        );
-
-        // Эмулируем реальный браузер
-        await page.setViewport({ width: 1920, height: 1080 });
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9'
+        // Используем curl с -L для следования редиректам (обходит Cloudflare 302)
+        const result = execSync(`curl -sL -X POST '${TOKEN_URL}' -H 'Content-Type: application/json' -d '${postData.replace(/'/g, "'\"'\"'")}'`, {
+            encoding: 'utf8',
+            timeout: 30000
         });
 
-        // Сначала посещаем главную страницу для получения cookies и обхода Cloudflare
-        log('Visiting main page to get cookies...');
-        await page.goto('https://console.anthropic.com', {
-            waitUntil: 'networkidle2',
-            timeout: 60000
-        });
+        const response = JSON.parse(result);
 
-        // Ждём пока Cloudflare пропустит
-        log('Waiting for Cloudflare...');
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
-        // Проверяем, прошли ли Cloudflare (ищем признаки challenge)
-        let pageContent = await page.content();
-        if (pageContent.includes('Just a moment') || pageContent.includes('Checking your browser')) {
-            log('Cloudflare challenge detected, waiting more...');
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            pageContent = await page.content();
-        }
-
-        // Проверяем что мы прошли Cloudflare
-        if (pageContent.includes('Just a moment')) {
-            throw new Error('Failed to pass Cloudflare challenge');
-        }
-
-        log('Cloudflare passed, sending token refresh request...');
-
-        // Используем CDP для выполнения fetch запроса напрямую
-        const client = await page.target().createCDPSession();
-
-        // Делаем POST запрос через page.evaluate после прохождения Cloudflare
-        const response = await page.evaluate(async (url, clientId, token) => {
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        grant_type: 'refresh_token',
-                        refresh_token: token,
-                        client_id: clientId
-                    }),
-                    credentials: 'include'
-                });
-
-                const text = await res.text();
-                try {
-                    const data = JSON.parse(text);
-                    return { ok: res.ok, status: res.status, data };
-                } catch (e) {
-                    return { ok: false, status: res.status, error: `Invalid JSON: ${text.substring(0, 200)}` };
-                }
-            } catch (err) {
-                return { ok: false, error: err.message };
-            }
-        }, TOKEN_URL, CLIENT_ID, refreshToken);
-
-        log(`Token response: status=${response.status}, ok=${response.ok}`);
-
-        if (!response.ok) {
-            const errorMsg = response.error || response.data?.error_description || response.data?.error || JSON.stringify(response);
+        if (response.error) {
+            const errorMsg = response.error_description || (typeof response.error === 'string' ? response.error : JSON.stringify(response.error));
             throw new Error(`Token refresh failed: ${errorMsg}`);
         }
 
-        if (!response.data?.access_token) {
-            throw new Error(`No access_token in response: ${JSON.stringify(response.data)}`);
+        if (!response.access_token) {
+            throw new Error(`No access_token in response: ${result}`);
         }
 
-        return response.data;
+        return response;
 
-    } finally {
-        await browser.close();
+    } catch (err) {
+        if (err.message.includes('Token refresh failed') || err.message.includes('No access_token')) {
+            throw err;
+        }
+        throw new Error(`curl failed: ${err.message}`);
     }
 }
 
-async function main() {
+function main() {
     try {
         // Загружаем credentials
-        const credentials = await loadCredentials();
+        const credentials = loadCredentials();
 
         if (!credentials.claudeAiOauth?.refreshToken) {
             throw new Error('No refresh token found in credentials');
@@ -170,8 +102,8 @@ async function main() {
             process.exit(0);
         }
 
-        // Обновляем токен через браузер
-        const tokenData = await refreshTokenWithBrowser(credentials.claudeAiOauth.refreshToken);
+        // Обновляем токен
+        const tokenData = refreshToken(credentials.claudeAiOauth.refreshToken);
 
         // Обновляем credentials
         credentials.claudeAiOauth.accessToken = tokenData.access_token;
