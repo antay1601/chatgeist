@@ -28,16 +28,26 @@ Claude CLI использует OAuth для авторизации:
 ```
 Хост (Ubuntu сервер)
 ├── /home/bot/chatgeist/
-│   ├── .env                              ← CLAUDE_CODE_OAUTH_TOKEN (используется Claude CLI)
+│   ├── .env                              ← CLAUDE_CODE_OAUTH_TOKEN (начальный токен)
 │   └── .claude-docker/credentials.json   ← refresh_token (для автообновления)
 
 Docker контейнер (claude-sandbox)
-├── Переменная CLAUDE_CODE_OAUTH_TOKEN    ← передаётся из .env
-├── /home/node/.claude/.credentials.json  ← монтируется для автообновления
+├── /home/node/.claude/.credentials.json  ← монтируется, обновляется cron-ом
+├── /usr/local/bin/claude                 ← wrapper-скрипт (читает токен из credentials.json)
+├── /usr/local/bin/claude-real            ← настоящий Claude CLI
 ├── /opt/token-refresh/
 │   └── refresh_token_browser.js          ← скрипт автообновления (curl)
 └── cron (каждый час)                     ← запускает скрипт
 ```
+
+### Как работает wrapper
+
+При каждом вызове `claude`:
+1. Wrapper читает свежий `accessToken` из `credentials.json`
+2. Устанавливает `CLAUDE_CODE_OAUTH_TOKEN`
+3. Вызывает настоящий Claude CLI
+
+Это позволяет cron обновлять токен без перезапуска контейнера.
 
 ---
 
@@ -178,10 +188,11 @@ docker exec claude-sandbox node /opt/token-refresh/refresh_token_browser.js
 |------|------------|
 | `sync_to_server.sh` | Синхронизация токенов с Mac на сервер |
 | `token-refresh/refresh_token_browser.js` | Автообновление токена (curl) |
-| `docker-compose.yml` | Конфигурация контейнера (CLAUDE_CODE_OAUTH_TOKEN) |
-| `Dockerfile.claude-sandbox` | Образ с cron и скриптом обновления |
-| `.env` | Access token для Claude CLI |
-| `.claude-docker/credentials.json` | Refresh token для автообновления |
+| `claude-wrapper.sh` | Wrapper для чтения свежего токена |
+| `docker-compose.yml` | Конфигурация контейнера |
+| `Dockerfile.claude-sandbox` | Образ с cron, wrapper и скриптом обновления |
+| `.env` | Начальный access token |
+| `.claude-docker/credentials.json` | Токены для автообновления |
 
 ---
 
@@ -193,7 +204,7 @@ docker exec claude-sandbox node /opt/token-refresh/refresh_token_browser.js
 │                                                                 │
 │  Claude CLI ←→ Keychain ←→ Anthropic OAuth                     │
 │       ↓                                                         │
-│  sync_to_server.sh                                              │
+│  sync_to_server.sh (раз в 2 недели по launchd)                 │
 │       ↓                                                         │
 └───────┼─────────────────────────────────────────────────────────┘
         │ SSH + SCP
@@ -201,26 +212,25 @@ docker exec claude-sandbox node /opt/token-refresh/refresh_token_browser.js
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Сервер Ubuntu                              │
 │                                                                 │
-│  .env (CLAUDE_CODE_OAUTH_TOKEN)                                │
 │  .claude-docker/credentials.json                                │
 │       ↓                                                         │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │              Docker: claude-sandbox                      │   │
 │  │                                                          │   │
-│  │  CLAUDE_CODE_OAUTH_TOKEN ──→ Claude CLI ──→ Anthropic   │   │
+│  │  Telegram Bot → claude (wrapper)                         │   │
+│  │                    ↓                                     │   │
+│  │            читает credentials.json                       │   │
+│  │                    ↓                                     │   │
+│  │            claude-real ──→ Anthropic API                 │   │
 │  │                                                          │   │
 │  │  cron (каждый час)                                       │   │
 │  │       ↓                                                  │   │
 │  │  refresh_token_browser.js                                │   │
 │  │       ↓                                                  │   │
-│  │  curl -L POST /api/oauth/token                           │   │
+│  │  curl POST /api/oauth/token                              │   │
 │  │       ↓                                                  │   │
-│  │  Обновляет credentials.json                              │   │
+│  │  Обновляет credentials.json (accessToken + expiresAt)    │   │
 │  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  Telegram Bot (bot_multi.py)                                    │
-│       ↓                                                         │
-│  docker exec claude-sandbox claude --print "запрос"             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
