@@ -16,6 +16,11 @@ RUN mkdir -p /home/node/.claude && chown node:node /home/node/.claude
 # Устанавливаем Claude CLI глобально через npm
 RUN npm install -g @anthropic-ai/claude-code
 
+# Создаём wrapper для claude, который читает свежий токен из credentials.json
+RUN mv /usr/local/bin/claude /usr/local/bin/claude-real
+COPY claude-wrapper.sh /usr/local/bin/claude
+RUN chmod +x /usr/local/bin/claude
+
 # Копируем скрипт обновления токена (использует только curl, без внешних зависимостей)
 COPY token-refresh/refresh_token_browser.js /opt/token-refresh/refresh_token_browser.js
 RUN chown -R node:node /opt/token-refresh
