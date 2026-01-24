@@ -24,6 +24,76 @@ from pdf_generator import generate_pdf
 # Игнорируем предупреждения о deprecation
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
+# ============================================================================
+# СИСТЕМА ЛИМИТОВ
+# ============================================================================
+
+# Whitelist пользователей (без лимитов)
+WHITELIST_USER_IDS = {
+    435878873,  # @tarados
+}
+
+# Лимит запросов для обычных пользователей
+DAILY_LIMIT = 5
+
+# Хранилище использования: {user_id: {"date": "2026-01-22", "count": 3}}
+usage_storage: dict[int, dict] = {}
+
+
+def check_rate_limit(user_id: int) -> tuple[bool, int]:
+    """
+    Проверяет лимит запросов для пользователя.
+
+    Returns:
+        (allowed, remaining) - разрешён ли запрос и сколько осталось
+    """
+    # Whitelist - без лимитов
+    if user_id in WHITELIST_USER_IDS:
+        return True, -1  # -1 означает безлимит
+
+    from datetime import date
+    today = date.today().isoformat()
+
+    # Получаем или создаём запись
+    if user_id not in usage_storage:
+        usage_storage[user_id] = {"date": today, "count": 0}
+
+    user_usage = usage_storage[user_id]
+
+    # Сброс счётчика если новый день
+    if user_usage["date"] != today:
+        user_usage["date"] = today
+        user_usage["count"] = 0
+
+    # Проверяем лимит
+    remaining = DAILY_LIMIT - user_usage["count"]
+
+    if remaining <= 0:
+        return False, 0
+
+    return True, remaining
+
+
+def increment_usage(user_id: int) -> None:
+    """Увеличивает счётчик использования."""
+    if user_id in WHITELIST_USER_IDS:
+        return
+
+    from datetime import date
+    today = date.today().isoformat()
+
+    if user_id not in usage_storage:
+        usage_storage[user_id] = {"date": today, "count": 0}
+
+    user_usage = usage_storage[user_id]
+
+    if user_usage["date"] != today:
+        user_usage["date"] = today
+        user_usage["count"] = 0
+
+    user_usage["count"] += 1
+
+
 # Хранилище активных запросов для возможности отмены
 # Ключ: message_id статусного сообщения
 # Значение: {"process": subprocess.Popen, "cancelled": bool}
@@ -511,6 +581,19 @@ async def handle_query(message: Message, state: FSMContext):
         await message.answer("❌ Будь ласка, надішліть непорожній запит.")
         return
 
+    # Проверяем лимит запросов
+    user_id = message.from_user.id
+    allowed, remaining = check_rate_limit(user_id)
+
+    if not allowed:
+        await message.answer(
+            "⚠️ Ви вичерпали денний ліміт запитів.\n\n"
+            f"Ліміт: {DAILY_LIMIT} запитів на день.\n"
+            "Спробуйте завтра!"
+        )
+        logger.info(f"Пользователь {user_id} превысил лимит запросов")
+        return
+
     # Отримуємо поточний чат (автовибір якщо не обрано)
     user_data = await state.get_data()
     current_db = user_data.get("current_db")
@@ -582,6 +665,11 @@ async def handle_query(message: Message, state: FSMContext):
     try:
         # Запрос к Claude со стримингом статуса
         report = await ask_claude_streaming(user_query, history, current_db, status_msg.message_id, update_status)
+
+        # Увеличиваем счётчик использования после успешного запроса
+        increment_usage(user_id)
+        if remaining > 0:
+            logger.info(f"Пользователь {user_id}: использовано запросов, осталось {remaining - 1}")
 
         # Відправляємо відповідь (PDF для довгих > 2500 символів)
         logger.info(f"Довжина відповіді: {len(report)} символів")
