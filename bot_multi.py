@@ -31,6 +31,7 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 # Whitelist пользователей (без лимитов)
 WHITELIST_USER_IDS = {
     435878873,  # @tarados
+    354910522,  # @dadonius
 }
 
 # Лимит запросов для обычных пользователей
