@@ -672,14 +672,22 @@ async def handle_query(message: Message, state: FSMContext):
         if remaining > 0:
             logger.info(f"Пользователь {user_id}: использовано запросов, осталось {remaining - 1}")
 
-        # Відправляємо відповідь (PDF для довгих > 2500 символів)
-        logger.info(f"Довжина відповіді: {len(report)} символів")
-        if len(report) <= 2500:
-            # Короткі відповіді — текстом
-            await status_msg.edit_text(report, reply_markup=None)
+        # Відправляємо відповідь
+        # PDF генерируется для: 1) skill "dossier" (всегда), 2) длинных ответов > 2500
+        logger.info(f"Довжина відповіді: {len(report)} символів, skill: {skill_name}")
+        force_pdf = skill_name == "dossier"
+
+        if not force_pdf and len(report) <= 2500:
+            # Короткі відповіді — текстом з форматуванням
+            try:
+                await status_msg.edit_text(report, reply_markup=None, parse_mode="Markdown")
+            except TelegramBadRequest:
+                # Якщо Markdown не парситься — відправляємо без форматування
+                await status_msg.edit_text(report, reply_markup=None)
         else:
-            # Довгі відповіді — тільки PDF
-            logger.info(f"Генерую PDF (відповідь {len(report)} > 2500)")
+            # PDF для досьє або довгих відповідей
+            reason = "skill=dossier" if force_pdf else f"довжина {len(report)} > 2500"
+            logger.info(f"Генерую PDF ({reason})")
             pdf_buffer = generate_pdf(report, title=f"Звіт: {chat_name}")
 
             # Видаляємо статусне повідомлення
