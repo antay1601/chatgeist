@@ -1,14 +1,15 @@
 """
 Telegram Bot для анализа сообщений из нескольких баз данных SQLite.
 Версия с поддержкой переключения между чатами (multi-chat).
-Использует Claude CLI в Docker sandbox для безопасного анализа.
+Использует Anthropic API для анализа.
 """
 
 import os
 import asyncio
 import logging
 import warnings
-import subprocess
+import json
+import sqlite3
 from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
@@ -16,10 +17,10 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-# InlineKeyboardBuilder більше не потрібен — бот працює з одним чатом
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from pdf_generator import generate_pdf
+import anthropic
 
 # Игнорируем предупреждения о deprecation
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -115,15 +116,41 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не найден в переменных окружения!")
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+if not ANTHROPIC_API_KEY:
+    raise ValueError("ANTHROPIC_API_KEY не найден в переменных окружения!")
+
 # Пути к базам данных
-DB_ROOT_HOST = Path("databases")          # Папка на хосте
-DB_ROOT_DOCKER = "/workspace/dbs"         # Папка внутри контейнера
+DB_ROOT = Path("databases")
 
 # Пути к промптам
 PROMPTS_DIR = Path("prompts")
 
-# Docker контейнер
-DOCKER_CONTAINER = "claude-sandbox"
+# Модель Claude
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+
+# Anthropic клиент
+anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# SQL Tool для Claude
+SQL_TOOL = {
+    "name": "execute_sql",
+    "description": "Выполняет SQL запрос к базе данных SQLite с сообщениями Telegram чата. "
+                   "Используй SELECT для чтения данных. "
+                   "Таблица messages содержит поля: id, timestamp, date_iso, message (текст), "
+                   "sender_id, sender_username, sender_display_name, "
+                   "reply_to_msg_id, reactions_count, reactions_detail, views, forwards, permalink.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "SQL запрос для выполнения (только SELECT)"
+            }
+        },
+        "required": ["query"]
+    }
+}
 
 # Конфигурация Skills
 SKILLS = {
@@ -145,7 +172,7 @@ SKILLS = {
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-logger.info("✅ Multi-chat бот с Docker sandbox готов")
+logger.info("✅ Multi-chat бот с Anthropic API готов")
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -158,11 +185,11 @@ def get_available_databases() -> list[dict]:
     Returns:
         Список словарей: [{"name": "durov", "path": "databases/durov.db", "size_mb": 1.5}, ...]
     """
-    if not DB_ROOT_HOST.exists():
+    if not DB_ROOT.exists():
         return []
 
     databases = []
-    for db_file in sorted(DB_ROOT_HOST.glob("*.db")):
+    for db_file in sorted(DB_ROOT.glob("*.db")):
         size_mb = db_file.stat().st_size / (1024 * 1024)
         databases.append({
             "name": db_file.stem,  # имя без .db
@@ -172,6 +199,39 @@ def get_available_databases() -> list[dict]:
         })
 
     return databases
+
+
+def execute_sql(db_path: str, query: str) -> str:
+    """
+    Выполняет SQL запрос к базе данных.
+    Возвращает результат в виде JSON строки.
+    """
+    query_lower = query.strip().lower()
+    if not query_lower.startswith("select"):
+        return json.dumps({"error": "Разрешены только SELECT запросы"}, ensure_ascii=False)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        conn.close()
+
+        # Конвертируем в список словарей
+        result = [dict(row) for row in rows]
+
+        # Ограничиваем размер результата
+        result_json = json.dumps(result, ensure_ascii=False, default=str)
+        if len(result_json) > 50000:
+            result = result[:100]
+            result_json = json.dumps(result, ensure_ascii=False, default=str)
+            result_json = result_json[:-1] + ', {"_warning": "Результат обрезан до 100 записей"}]'
+
+        return result_json
+
+    except sqlite3.Error as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def load_prompt(filename: str) -> str:
@@ -212,22 +272,6 @@ def detect_skill(query: str) -> str | None:
     return None
 
 
-def check_docker_container() -> bool:
-    """
-    Проверяет, запущен ли Docker контейнер.
-    """
-    try:
-        result = subprocess.run(
-            ['docker', 'ps', '--filter', f'name={DOCKER_CONTAINER}', '--format', '{{.Names}}'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return DOCKER_CONTAINER in result.stdout
-    except Exception:
-        return False
-
-
 async def get_conversation_history(message: Message, bot_id: int) -> list[dict]:
     """
     Собирает цепочку сообщений (историю диалога) через reply.
@@ -256,23 +300,23 @@ async def get_conversation_history(message: Message, bot_id: int) -> list[dict]:
     return history
 
 
-def build_claude_prompt(question: str, history: list[dict], db_filename: str) -> tuple[str, str | None]:
+def build_system_prompt(db_filename: str, question: str) -> tuple[str, str | None]:
     """
-    Формирует промпт для Claude.
+    Формирует системный промпт для Claude.
 
     Returns:
-        Tuple (full_prompt, skill_name)
+        Tuple (system_prompt, skill_name)
     """
-    docker_db_path = f"{DB_ROOT_DOCKER}/{db_filename}"
-
     # Загружаем базовый промпт
     base_prompt = load_prompt("base.md")
     if not base_prompt:
         base_prompt = """Ты — аналитик данных Telegram-чатов.
-Используй базу данных SQLite для анализа.
-Таблица messages содержит: id, timestamp, date_iso, message, sender_id, sender_username, sender_display_name, reply_to_msg_id, reactions_count, reactions_detail, views, forwards, permalink."""
+Используй инструмент execute_sql для выполнения SQL запросов к базе данных.
+Таблица messages содержит: id, timestamp, date_iso, message, sender_id, sender_username, sender_display_name, reply_to_msg_id, reactions_count, reactions_detail, views, forwards, permalink.
+Отвечай на украинском языке. Форматируй ответы простым текстом. Используй эмодзи для структурирования."""
 
-    base_prompt = base_prompt.replace("{db_path}", docker_db_path)
+    # Убираем {db_path} если есть - теперь используем tool
+    base_prompt = base_prompt.replace("{db_path}", "через execute_sql")
 
     # Определяем skill
     skill_name = detect_skill(question)
@@ -284,29 +328,14 @@ def build_claude_prompt(question: str, history: list[dict], db_filename: str) ->
         if skill_prompt:
             logger.info(f"Загружен skill: {skill_name}")
 
-    # История диалога
-    history_section = ""
-    if history:
-        history_text = "\n\n".join([
-            f"{'Пользователь' if msg['role'] == 'user' else 'Ассистент'}: {msg['content']}"
-            for msg in history
-        ])
-        history_section = f"\n\n## История диалога\n\n{history_text}"
-
     # Собираем промпт
-    full_prompt = base_prompt
+    system_prompt = base_prompt
     if skill_prompt:
-        full_prompt += f"\n\n---\n\n{skill_prompt}"
-    if history_section:
-        full_prompt += history_section
-    full_prompt += f"\n\n## Текущий запрос\n\n{question}"
+        system_prompt += f"\n\n---\n\n{skill_prompt}"
 
-    return full_prompt, skill_name
+    return system_prompt, skill_name
 
 
-import re
-import threading
-import queue
 from typing import Callable
 
 # Етапи аналізу для відображення прогресу
@@ -334,7 +363,7 @@ def get_cancel_keyboard(status_msg_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-async def ask_claude_streaming(
+async def ask_claude_api(
     question: str,
     history: list[dict],
     db_filename: str,
@@ -342,7 +371,7 @@ async def ask_claude_streaming(
     status_callback: Callable[[str], None] | None = None
 ) -> str:
     """
-    Отправляет запрос в Claude CLI с отображением прогресса и возможностью отмены.
+    Отправляет запрос в Anthropic API с поддержкой tool use.
 
     Args:
         question: Вопрос пользователя
@@ -353,146 +382,108 @@ async def ask_claude_streaming(
 
     Returns:
         Ответ от Claude
-
-    Raises:
-        asyncio.CancelledError: Если запрос был отменён пользователем
     """
-    import asyncio
     import time
 
-    full_prompt, skill_name = build_claude_prompt(question, history, db_filename)
-    logger.info(f"Запрос к Claude (БД: {db_filename}, история: {len(history)})")
+    db_path = str(DB_ROOT / db_filename)
+    system_prompt, skill_name = build_system_prompt(db_filename, question)
 
-    output_lines: list[str] = []
-    error_lines: list[str] = []
-    process_done = False
-    process_ref: subprocess.Popen | None = None
+    logger.info(f"Запрос к Claude API (БД: {db_filename}, история: {len(history)})")
 
-    def run_process():
-        """Запускает процесс и читает вывод."""
-        nonlocal process_done, process_ref
-        process = subprocess.Popen(
-            [
-                'docker', 'exec',
-                '-u', 'node',
-                DOCKER_CONTAINER,
-                'claude', '--print', '--dangerously-skip-permissions',
-                full_prompt
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        process_ref = process
-
-        # Сохраняем процесс для возможности отмены
-        if status_msg_id in active_requests:
-            active_requests[status_msg_id]["process"] = process
-
-        # Читаем stderr
-        def read_stderr():
-            for line in process.stderr:
-                error_lines.append(line)
-
-        stderr_thread = threading.Thread(target=read_stderr, daemon=True)
-        stderr_thread.start()
-
-        # Читаем stdout
-        for line in process.stdout:
-            output_lines.append(line)
-
-        process.wait()
-        stderr_thread.join(timeout=1)
-        process_done = True
-
-        return process.returncode
-
-    # Регистрируем запрос
-    active_requests[status_msg_id] = {"process": None, "cancelled": False}
+    # Регистрируем запрос для возможности отмены
+    active_requests[status_msg_id] = {"cancelled": False}
 
     try:
-        # Запускаем процесс в отдельном потоке
-        loop = asyncio.get_event_loop()
-        process_task = loop.run_in_executor(None, run_process)
+        # Формируем сообщения
+        messages = []
 
-        # Обновляем статус по таймеру
+        # Добавляем историю
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Добавляем текущий вопрос
+        messages.append({"role": "user", "content": question})
+
         start_time = time.time()
-        last_status = ""
-        update_count = 0
 
-        # Первое обновление сразу
+        # Первое обновление статуса
         if status_callback:
             try:
                 await status_callback("🔍 Аналізую запит...\n⏱ 0 сек")
-                logger.info("Статус обновлён: начало")
             except Exception as e:
-                logger.warning(f"Не удалось обновить статус (начало): {e}")
+                logger.warning(f"Не удалось обновить статус: {e}")
 
-        while not process_done:
-            await asyncio.sleep(3)
+        # Запрос к API в отдельном потоке (чтобы не блокировать event loop)
+        loop = asyncio.get_event_loop()
+
+        def make_api_call():
+            return anthropic_client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=4096,
+                system=system_prompt,
+                tools=[SQL_TOOL],
+                messages=messages
+            )
+
+        response = await loop.run_in_executor(None, make_api_call)
+
+        # Обрабатываем tool use в цикле
+        iteration = 0
+        while response.stop_reason == "tool_use":
+            iteration += 1
 
             # Проверяем отмену
             if active_requests.get(status_msg_id, {}).get("cancelled"):
-                logger.info(f"Запрос {status_msg_id} отменён пользователем")
-                if process_ref:
-                    process_ref.terminate()
-                    try:
-                        process_ref.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process_ref.kill()
                 raise asyncio.CancelledError("Запрос отменён пользователем")
 
+            # Обновляем статус
             elapsed = int(time.time() - start_time)
-            new_status = get_stage_status(elapsed)
-            time_str = f"{elapsed // 60}:{elapsed % 60:02d}" if elapsed >= 60 else f"{elapsed} сек"
-            full_status = f"{new_status}\n⏱ {time_str}"
-
-            update_count += 1
-            logger.info(f"Цикл статуса #{update_count}: {elapsed} сек, process_done={process_done}")
-
             if status_callback:
                 try:
-                    await status_callback(full_status)
-                    logger.info(f"Статус обновлён: {new_status}")
-                except Exception as e:
-                    logger.warning(f"Не удалось обновить статус: {e}")
+                    status = get_stage_status(elapsed)
+                    time_str = f"{elapsed // 60}:{elapsed % 60:02d}" if elapsed >= 60 else f"{elapsed} сек"
+                    await status_callback(f"{status}\n⏱ {time_str}")
+                except Exception:
+                    pass
 
-        # Получаем результат
-        return_code = await process_task
+            # Находим tool use блоки
+            tool_uses = [block for block in response.content if block.type == "tool_use"]
 
-        if return_code != 0:
-            error_text = "".join(error_lines)
-            raise subprocess.CalledProcessError(return_code, "claude", stderr=error_text)
+            # Добавляем ответ ассистента
+            messages.append({"role": "assistant", "content": response.content})
 
-        return "".join(output_lines).strip()
+            # Выполняем каждый tool call
+            tool_results = []
+            for tool_use in tool_uses:
+                if tool_use.name == "execute_sql":
+                    query = tool_use.input.get("query", "")
+                    logger.info(f"SQL запрос #{iteration}: {query[:100]}...")
+                    result = execute_sql(db_path, query)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": result
+                    })
+
+            # Добавляем результаты
+            messages.append({"role": "user", "content": tool_results})
+
+            # Следующий запрос
+            response = await loop.run_in_executor(None, lambda: anthropic_client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=4096,
+                system=system_prompt,
+                tools=[SQL_TOOL],
+                messages=messages
+            ))
+
+        # Извлекаем текстовый ответ
+        text_blocks = [block.text for block in response.content if hasattr(block, 'text')]
+        return "\n".join(text_blocks) if text_blocks else "Не удалось получить ответ"
 
     finally:
         # Очищаем запись о запросе
         active_requests.pop(status_msg_id, None)
-
-
-def ask_claude_secure(question: str, history: list[dict], db_filename: str) -> str:
-    """
-    Синхронная версия для обратной совместимости.
-    """
-    full_prompt, _ = build_claude_prompt(question, history, db_filename)
-    logger.info(f"Запрос к Claude (БД: {db_filename}, история: {len(history)})")
-
-    result = subprocess.run(
-        [
-            'docker', 'exec',
-            '-u', 'node',
-            DOCKER_CONTAINER,
-            'claude', '--print', '--dangerously-skip-permissions',
-            full_prompt
-        ],
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=1200
-    )
-
-    return result.stdout.strip()
 
 
 # ============================================================================
@@ -545,7 +536,7 @@ async def cmd_help(message: Message):
 • Досьє на @username
 • Топ кафе / ресторанів
 
-🔒 Безпека: всі запити обробляються в ізольованому Docker-контейнері.
+🔒 Безпека: всі запити обробляються через захищений Anthropic API.
     """
     await message.answer(help_text)
 
@@ -609,18 +600,10 @@ async def handle_query(message: Message, state: FSMContext):
         await state.update_data(current_db=current_db)
 
     # Перевіряємо існування БД
-    db_path = DB_ROOT_HOST / current_db
+    db_path = DB_ROOT / current_db
     if not db_path.exists():
         await message.answer("❌ Базу даних не знайдено.")
         await state.update_data(current_db=None)
-        return
-
-    # Проверяем Docker контейнер
-    if not check_docker_container():
-        await message.answer(
-            "❌ Docker контейнер не запущено.\n\n"
-            "Запустіть: `docker compose up -d`"
-        )
         return
 
     # Собираем историю диалога
@@ -664,8 +647,8 @@ async def handle_query(message: Message, state: FSMContext):
             pass  # Игнорируем ошибки редактирования (например, текст не изменился)
 
     try:
-        # Запрос к Claude со стримингом статуса
-        report = await ask_claude_streaming(user_query, history, current_db, status_msg.message_id, update_status)
+        # Запрос к Claude API
+        report = await ask_claude_api(user_query, history, current_db, status_msg.message_id, update_status)
 
         # Увеличиваем счётчик использования после успешного запроса
         increment_usage(user_id)
@@ -710,16 +693,9 @@ async def handle_query(message: Message, state: FSMContext):
         logger.info(f"Запрос отменён пользователем (msg_id={status_msg.message_id})")
         await status_msg.edit_text("⏹ Запит скасовано.", reply_markup=None)
 
-    except subprocess.TimeoutExpired:
-        logger.error("Таймаут при обработке запроса")
-        await status_msg.edit_text("❌ Перевищено час очікування (20 хвилин).\nСпробуйте спростити запит.", reply_markup=None)
-
-    except subprocess.CalledProcessError as e:
-        error_output = e.stderr if e.stderr else e.stdout
-        if not error_output:
-            error_output = f"Exit code: {e.returncode}"
-        logger.error(f"Ошибка Claude CLI: {error_output}")
-        await status_msg.edit_text(f"❌ Помилка API Claude:\n\n{error_output[:500]}", reply_markup=None)
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API ошибка: {e}")
+        await status_msg.edit_text(f"❌ Помилка API Claude:\n\n{str(e)[:500]}", reply_markup=None)
 
     except Exception as e:
         logger.error(f"Ошибка: {e}", exc_info=True)
@@ -732,22 +708,16 @@ async def handle_query(message: Message, state: FSMContext):
 
 async def main():
     """Главная функция запуска бота"""
-    logger.info("🚀 Запуск Multi-chat бота...")
+    logger.info("🚀 Запуск бота с Anthropic API...")
 
     # Проверяем папку с БД
-    if not DB_ROOT_HOST.exists():
-        logger.warning(f"Папка {DB_ROOT_HOST} не существует! Создаю...")
-        DB_ROOT_HOST.mkdir(parents=True, exist_ok=True)
+    if not DB_ROOT.exists():
+        logger.warning(f"Папка {DB_ROOT} не существует! Создаю...")
+        DB_ROOT.mkdir(parents=True, exist_ok=True)
 
     databases = get_available_databases()
     logger.info(f"📂 Найдено баз данных: {len(databases)}")
-
-    # Проверяем Docker
-    if check_docker_container():
-        logger.info(f"✅ Docker контейнер {DOCKER_CONTAINER} запущен")
-    else:
-        logger.warning(f"⚠️ Docker контейнер {DOCKER_CONTAINER} не запущен!")
-        logger.info("   Запустите: docker compose up -d")
+    logger.info(f"🤖 Модель: {CLAUDE_MODEL}")
 
     try:
         await dp.start_polling(bot)
