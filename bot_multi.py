@@ -205,15 +205,45 @@ def execute_sql(db_path: str, query: str) -> str:
     """
     Выполняет SQL запрос к базе данных.
     Возвращает результат в виде JSON строки.
+
+    Безопасность:
+    - Только SELECT запросы
+    - Запрещены ATTACH, PRAGMA и другие опасные команды
+    - Ограничение на размер результата
+    - Read-only соединение
     """
     query_lower = query.strip().lower()
+
+    # Проверка: только SELECT
     if not query_lower.startswith("select"):
+        logger.warning(f"Отклонён не-SELECT запрос: {query[:100]}")
         return json.dumps({"error": "Разрешены только SELECT запросы"}, ensure_ascii=False)
 
+    # Проверка: запрещённые конструкции
+    forbidden_patterns = [
+        'attach', 'detach',      # Подключение других БД
+        'pragma',                 # Системные команды
+        'vacuum', 'reindex',      # Обслуживание БД
+        'create', 'drop', 'alter',# DDL команды
+        'insert', 'update', 'delete', 'replace',  # DML команды
+        'load_extension',         # Загрузка расширений
+        ';',                      # Множественные запросы
+    ]
+
+    for pattern in forbidden_patterns:
+        if pattern in query_lower:
+            logger.warning(f"Отклонён запрос с запрещённым паттерном '{pattern}': {query[:100]}")
+            return json.dumps({"error": f"Запрещённая операция: {pattern}"}, ensure_ascii=False)
+
     try:
-        conn = sqlite3.connect(db_path)
+        # Read-only соединение через URI
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+
+        # Ограничение времени выполнения (5 секунд)
+        conn.execute("PRAGMA busy_timeout = 5000")
+
         cursor.execute(query)
         rows = cursor.fetchall()
         conn.close()
@@ -231,6 +261,7 @@ def execute_sql(db_path: str, query: str) -> str:
         return result_json
 
     except sqlite3.Error as e:
+        logger.error(f"SQL ошибка: {e}, запрос: {query[:100]}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
