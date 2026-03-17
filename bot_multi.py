@@ -456,6 +456,35 @@ def get_cancel_keyboard(status_msg_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def build_dossier_keyboard(databases: list[dict], selected: list[str]) -> InlineKeyboardMarkup:
+    """
+    Створює клавіатуру для вибору чатів перед запуском досьє.
+
+    Args:
+        databases: Список доступних БД
+        selected: Список вибраних filename
+
+    Returns:
+        InlineKeyboardMarkup з кнопками чатів + "Усі чати" + "Пошук"
+    """
+    buttons = []
+    for db in databases:
+        is_selected = db["filename"] in selected
+        label = f"✅ {db['name']}" if is_selected else f"☐ {db['name']}"
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"dossier_toggle:{db['filename']}"
+        )])
+
+    # Кнопка "Усі чати" та "Пошук" в одному рядку
+    buttons.append([
+        InlineKeyboardButton(text="📋 Усі чати", callback_data="dossier_all"),
+        InlineKeyboardButton(text="▶️ Пошук", callback_data="dossier_go"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 async def ask_claude_api(
     question: str,
     history: list[dict],
@@ -772,6 +801,152 @@ async def on_select_chat(callback: CallbackQuery, state: FSMContext):
         pass
 
 
+@dp.callback_query(F.data.startswith("dossier_toggle:"))
+async def on_dossier_toggle(callback: CallbackQuery, state: FSMContext):
+    """Перемикає вибір окремого чату для досьє."""
+    filename = callback.data.split(":", 1)[1]
+    user_data = await state.get_data()
+    selected = user_data.get("dossier_selected_dbs", [])
+
+    # Toggle: якщо є — прибрати, якщо нема — додати
+    if filename in selected:
+        selected.remove(filename)
+    else:
+        selected.append(filename)
+
+    await state.update_data(dossier_selected_dbs=selected)
+
+    # Оновлюємо кнопки
+    all_databases = get_available_databases()
+    keyboard = build_dossier_keyboard(all_databases, selected)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "dossier_all")
+async def on_dossier_all(callback: CallbackQuery, state: FSMContext):
+    """Обирає всі чати для досьє."""
+    all_databases = get_available_databases()
+    selected = [db["filename"] for db in all_databases]
+    await state.update_data(dossier_selected_dbs=selected)
+
+    keyboard = build_dossier_keyboard(all_databases, selected)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Обрано всі чати")
+
+
+@dp.callback_query(F.data == "dossier_go")
+async def on_dossier_go(callback: CallbackQuery, state: FSMContext):
+    """Запускає пошук досьє по вибраних чатах."""
+    user_data = await state.get_data()
+    dossier_query = user_data.get("dossier_query")
+    dossier_history = user_data.get("dossier_history", [])
+    selected_dbs = user_data.get("dossier_selected_dbs", [])
+    current_db = user_data.get("current_db")
+
+    if not dossier_query:
+        await callback.answer("❌ Запит не знайдено. Спробуйте ще раз.", show_alert=True)
+        return
+
+    if not selected_dbs:
+        await callback.answer("❌ Оберіть хоча б один чат!", show_alert=True)
+        return
+
+    # Видаляємо повідомлення з кнопками
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await callback.answer()
+
+    # Формуємо multi_db_list з вибраних БД
+    all_databases = get_available_databases()
+    multi_db_list = [db for db in all_databases if db["filename"] in selected_dbs]
+
+    # Очищаємо FSM від даних досьє
+    await state.update_data(dossier_query=None, dossier_history=None, dossier_selected_dbs=None)
+
+    # Перевіряємо лімит
+    user_id = callback.from_user.id
+    allowed, remaining = check_rate_limit(user_id)
+    if not allowed:
+        await callback.message.answer(
+            "⚠️ Ви вичерпали денний ліміт запитів.\n\n"
+            f"Ліміт: {DAILY_LIMIT} запитів на день.\n"
+            "Спробуйте завтра!"
+        )
+        return
+
+    # Статусне повідомлення
+    chat_label = f"{len(multi_db_list)} чатів" if len(multi_db_list) > 1 else multi_db_list[0]["name"]
+    skill_label = " [dossier]"
+
+    status_msg = await callback.message.answer(
+        f"🔄 Аналізую [{chat_label}]{skill_label}, зачекайте...",
+        reply_markup=get_cancel_keyboard(0)
+    )
+
+    cancel_keyboard = get_cancel_keyboard(status_msg.message_id)
+
+    async def update_status(new_status: str):
+        try:
+            await status_msg.edit_text(
+                f"🔄 [{chat_label}]{skill_label}\n{new_status}",
+                reply_markup=cancel_keyboard
+            )
+        except TelegramBadRequest:
+            pass
+
+    try:
+        db_filename = current_db or multi_db_list[0]["filename"]
+        report = await ask_claude_api(
+            dossier_query, dossier_history, db_filename, status_msg.message_id, update_status,
+            multi_db_list=multi_db_list if len(multi_db_list) > 1 else None
+        )
+
+        increment_usage(user_id)
+        if remaining > 0:
+            logger.info(f"Пользователь {user_id}: использовано запросов, осталось {remaining - 1}")
+
+        # PDF для dossier
+        chat_name = db_filename.replace('.db', '')
+        logger.info(f"Генерую PDF (skill=dossier, довжина {len(report)})")
+        pdf_buffer = generate_pdf(report, title=f"Звіт: {chat_name}")
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        pdf_file = BufferedInputFile(
+            pdf_buffer.read(),
+            filename=f"report_{chat_name}.pdf"
+        )
+        await callback.message.answer_document(
+            document=pdf_file,
+            caption="📊 Звіт готовий"
+        )
+
+    except asyncio.CancelledError:
+        logger.info(f"Запрос отменён пользователем (msg_id={status_msg.message_id})")
+        await status_msg.edit_text("⏹ Запит скасовано.", reply_markup=None)
+
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API ошибка: {e}")
+        await status_msg.edit_text(f"❌ Помилка API Claude:\n\n{str(e)[:500]}", reply_markup=None)
+
+    except Exception as e:
+        logger.error(f"Ошибка: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Помилка:\n\n{str(e)[:500]}", reply_markup=None)
+
+
 @dp.message(Command("current"))
 async def cmd_current(message: Message, state: FSMContext):
     """Команда /current — показати поточний чат"""
@@ -848,13 +1023,25 @@ async def handle_query(message: Message, state: FSMContext):
     skill_name = detect_skill(user_query)
     skill_label = f" [{skill_name}]" if skill_name else ""
 
-    # Мульти-БД для dossier: если есть > 1 БД
+    # Мульти-БД для dossier: если есть > 1 БД — показати вибір чатів
     multi_db_list = None
     if skill_name == "dossier":
         all_databases = get_available_databases()
         if len(all_databases) > 1:
-            multi_db_list = all_databases
-            logger.info(f"Мульти-БД режим для dossier: {[db['name'] for db in all_databases]}")
+            # Зберігаємо запит у FSM та показуємо кнопки вибору чатів
+            selected_dbs = [db["filename"] for db in all_databases]
+            await state.update_data(
+                dossier_query=user_query,
+                dossier_history=history,
+                dossier_selected_dbs=selected_dbs,
+            )
+            keyboard = build_dossier_keyboard(all_databases, selected_dbs)
+            await message.answer(
+                "📂 Оберіть чати для пошуку досьє:",
+                reply_markup=keyboard,
+            )
+            logger.info(f"Показано вибір чатів для dossier: {[db['name'] for db in all_databases]}")
+            return
 
     # Статусное сообщение
     chat_name = current_db.replace('.db', '')
