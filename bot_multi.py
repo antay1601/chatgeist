@@ -661,7 +661,8 @@ async def cmd_start(message: Message, state: FSMContext):
 
 Цей бот аналізує історію Telegram-чату за допомогою AI.
 
-📊 Підключено чат: {chat_name}
+📊 Поточний чат: {chat_name}
+💬 /chats — змінити чат
 
 💡 Просто ставте запитання!
 
@@ -699,7 +700,27 @@ async def cmd_help(message: Message):
     await message.answer(help_text)
 
 
-# Команда /chats видалена — бот працює з одним чатом
+@dp.message(Command("chats"))
+async def cmd_chats(message: Message, state: FSMContext):
+    """Команда /chats — вибір чату"""
+    databases = get_available_databases()
+    if not databases:
+        await message.answer("❌ Немає доступних баз даних.")
+        return
+
+    user_data = await state.get_data()
+    current_db = user_data.get("current_db", databases[0]["filename"])
+
+    buttons = []
+    for db in databases:
+        label = f"✅ {db['name']}" if db["filename"] == current_db else db["name"]
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"select_chat:{db['filename']}"
+        )])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("💬 Оберіть чат для аналізу:", reply_markup=keyboard)
 
 
 @dp.callback_query(F.data.startswith("cancel_request:"))
@@ -719,7 +740,55 @@ async def on_cancel_request(callback: CallbackQuery):
         await callback.answer("Запит вже завершено", show_alert=False)
 
 
-# Команда /current видалена — бот працює з одним чатом
+@dp.callback_query(F.data.startswith("select_chat:"))
+async def on_select_chat(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выбора чата через inline-кнопки"""
+    db_filename = callback.data.split(":", 1)[1]
+
+    # Проверяем что БД существует
+    available = {db["filename"]: db["name"] for db in get_available_databases()}
+    if db_filename not in available:
+        await callback.answer("❌ База даних не знайдена", show_alert=True)
+        return
+
+    await state.update_data(current_db=db_filename)
+    chat_name = available[db_filename]
+    await callback.answer(f"Чат змінено на {chat_name}")
+
+    # Обновляем кнопки с новой галочкой
+    databases = get_available_databases()
+    buttons = []
+    for db in databases:
+        label = f"✅ {db['name']}" if db["filename"] == db_filename else db["name"]
+        buttons.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"select_chat:{db['filename']}"
+        )])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+
+
+@dp.message(Command("current"))
+async def cmd_current(message: Message, state: FSMContext):
+    """Команда /current — показати поточний чат"""
+    user_data = await state.get_data()
+    current_db = user_data.get("current_db")
+
+    if not current_db:
+        databases = get_available_databases()
+        if databases:
+            current_db = databases[0]["filename"]
+            await state.update_data(current_db=current_db)
+        else:
+            await message.answer("❌ Немає доступних баз даних.")
+            return
+
+    chat_name = current_db.replace(".db", "")
+    await message.answer(f"📊 Поточний чат: **{chat_name}**", parse_mode="Markdown")
 
 
 @dp.message(F.text)
