@@ -152,6 +152,31 @@ SQL_TOOL = {
     }
 }
 
+# SQL Tool для мульти-БД режима (с параметром database)
+SQL_TOOL_MULTI = {
+    "name": "execute_sql",
+    "description": "Выполняет SQL запрос к указанной базе данных SQLite с сообщениями Telegram чата. "
+                   "Используй SELECT для чтения данных. "
+                   "ВАЖНО: указывай параметр database — имя файла БД, к которой направлен запрос. "
+                   "Таблица messages содержит поля: id, timestamp, date_iso, message (текст), "
+                   "sender_id, sender_username, sender_display_name, "
+                   "reply_to_msg_id, reactions_count, reactions_detail, views, forwards, permalink.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "SQL запрос для выполнения (только SELECT)"
+            },
+            "database": {
+                "type": "string",
+                "description": "Имя файла базы данных (например, 'ukrainciuvalencii.db')"
+            }
+        },
+        "required": ["query", "database"]
+    }
+}
+
 # Конфигурация Skills
 SKILLS = {
     "dossier": {
@@ -331,9 +356,20 @@ async def get_conversation_history(message: Message, bot_id: int) -> list[dict]:
     return history
 
 
-def build_system_prompt(db_filename: str, question: str) -> tuple[str, str | None]:
+def build_system_prompt(
+    db_filename: str,
+    question: str,
+    multi_db: bool = False,
+    available_databases: list[dict] | None = None
+) -> tuple[str, str | None]:
     """
     Формирует системный промпт для Claude.
+
+    Args:
+        db_filename: Имя файла БД (для single-db режима)
+        question: Вопрос пользователя
+        multi_db: Включён ли мульти-БД режим
+        available_databases: Список доступных БД (для мульти-БД)
 
     Returns:
         Tuple (system_prompt, skill_name)
@@ -363,6 +399,32 @@ def build_system_prompt(db_filename: str, question: str) -> tuple[str, str | Non
     system_prompt = base_prompt
     if skill_prompt:
         system_prompt += f"\n\n---\n\n{skill_prompt}"
+
+    # Мульти-БД инструкции
+    if multi_db and available_databases:
+        db_list_str = "\n".join(
+            f"- `{db['filename']}` — чат **{db['name']}**"
+            for db in available_databases
+        )
+        multi_db_section = f"""
+
+---
+
+## Мульти-БД режим
+
+У тебя есть доступ к нескольким базам данных (чатам). При каждом вызове `execute_sql` указывай параметр `database` — имя файла БД.
+
+### Доступные базы данных:
+{db_list_str}
+
+### Инструкции:
+1. Сначала проверь, существует ли пользователь в каждой из баз данных (SELECT по username/display_name)
+2. Собирай данные из всех БД, где пользователь найден
+3. В итоговом досье объединяй информацию из всех чатов
+4. Указывай, из какого чата получена информация (например: "В чаті ukrainciuvalencii...")
+5. Статистику показывай отдельно по каждому чату и суммарно
+"""
+        system_prompt += multi_db_section
 
     return system_prompt, skill_name
 
@@ -399,7 +461,8 @@ async def ask_claude_api(
     history: list[dict],
     db_filename: str,
     status_msg_id: int,
-    status_callback: Callable[[str], None] | None = None
+    status_callback: Callable[[str], None] | None = None,
+    multi_db_list: list[dict] | None = None
 ) -> str:
     """
     Отправляет запрос в Anthropic API с поддержкой tool use.
@@ -407,19 +470,35 @@ async def ask_claude_api(
     Args:
         question: Вопрос пользователя
         history: История диалога
-        db_filename: Имя файла БД
+        db_filename: Имя файла БД (для single-db режима)
         status_msg_id: ID сообщения со статусом (для отмены)
         status_callback: Async callback для обновления статуса
+        multi_db_list: Список БД для мульти-режима (None = single-db)
 
     Returns:
         Ответ от Claude
     """
     import time
 
+    is_multi_db = multi_db_list is not None and len(multi_db_list) > 1
     db_path = str(DB_ROOT / db_filename)
-    system_prompt, skill_name = build_system_prompt(db_filename, question)
 
-    logger.info(f"Запрос к Claude API (БД: {db_filename}, история: {len(history)})")
+    # Whitelist имён БД для мульти-режима
+    allowed_db_filenames: set[str] = set()
+    if is_multi_db:
+        allowed_db_filenames = {db["filename"] for db in multi_db_list}
+
+    system_prompt, skill_name = build_system_prompt(
+        db_filename, question,
+        multi_db=is_multi_db,
+        available_databases=multi_db_list
+    )
+
+    # Выбираем tool
+    sql_tool = SQL_TOOL_MULTI if is_multi_db else SQL_TOOL
+
+    mode_label = f"мульти-БД ({len(multi_db_list)} чатів)" if is_multi_db else f"БД: {db_filename}"
+    logger.info(f"Запрос к Claude API ({mode_label}, история: {len(history)})")
 
     # Регистрируем запрос для возможности отмены
     active_requests[status_msg_id] = {"cancelled": False}
@@ -452,7 +531,7 @@ async def ask_claude_api(
                 model=CLAUDE_MODEL,
                 max_tokens=4096,
                 system=system_prompt,
-                tools=[SQL_TOOL],
+                tools=[sql_tool],
                 messages=messages
             )
 
@@ -488,8 +567,55 @@ async def ask_claude_api(
             for tool_use in tool_uses:
                 if tool_use.name == "execute_sql":
                     query = tool_use.input.get("query", "")
-                    logger.info(f"SQL запрос #{iteration}: {query[:100]}...")
-                    result = execute_sql(db_path, query)
+
+                    # Определяем путь к БД
+                    if is_multi_db:
+                        target_db_filename = tool_use.input.get("database", "")
+
+                        # Валидация имени БД
+                        if not target_db_filename:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": json.dumps(
+                                    {"error": "Параметр 'database' обязателен. Укажи имя файла БД."},
+                                    ensure_ascii=False
+                                )
+                            })
+                            continue
+
+                        # Защита от path traversal
+                        if "/" in target_db_filename or "\\" in target_db_filename or ".." in target_db_filename:
+                            logger.warning(f"Path traversal attempt: {target_db_filename}")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": json.dumps(
+                                    {"error": "Недопустимое имя базы данных."},
+                                    ensure_ascii=False
+                                )
+                            })
+                            continue
+
+                        # Проверка по whitelist
+                        if target_db_filename not in allowed_db_filenames:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": json.dumps(
+                                    {"error": f"БД '{target_db_filename}' недоступна. Доступные: {', '.join(sorted(allowed_db_filenames))}"},
+                                    ensure_ascii=False
+                                )
+                            })
+                            continue
+
+                        resolved_db_path = str(DB_ROOT / target_db_filename)
+                        logger.info(f"SQL запрос #{iteration} [{target_db_filename}]: {query[:100]}...")
+                    else:
+                        resolved_db_path = db_path
+                        logger.info(f"SQL запрос #{iteration}: {query[:100]}...")
+
+                    result = execute_sql(resolved_db_path, query)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use.id,
@@ -500,11 +626,12 @@ async def ask_claude_api(
             messages.append({"role": "user", "content": tool_results})
 
             # Следующий запрос
+            current_tool = sql_tool
             response = await loop.run_in_executor(None, lambda: anthropic_client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=4096,
                 system=system_prompt,
-                tools=[SQL_TOOL],
+                tools=[current_tool],
                 messages=messages
             ))
 
@@ -648,19 +775,33 @@ async def handle_query(message: Message, state: FSMContext):
     else:
         logger.info(f"Новый запрос: {user_query[:50]}...")
 
-    # Статусное сообщение
-    chat_name = current_db.replace('.db', '')
+    # Определяем skill и мульти-БД режим
     skill_name = detect_skill(user_query)
     skill_label = f" [{skill_name}]" if skill_name else ""
 
+    # Мульти-БД для dossier: если есть > 1 БД
+    multi_db_list = None
+    if skill_name == "dossier":
+        all_databases = get_available_databases()
+        if len(all_databases) > 1:
+            multi_db_list = all_databases
+            logger.info(f"Мульти-БД режим для dossier: {[db['name'] for db in all_databases]}")
+
+    # Статусное сообщение
+    chat_name = current_db.replace('.db', '')
+    if multi_db_list:
+        chat_label = f"{len(multi_db_list)} чатів"
+    else:
+        chat_label = chat_name
+
     if is_reply and history:
         status_msg = await message.answer(
-            f"🔄 Аналізую [{chat_name}]{skill_label} з урахуванням контексту...",
+            f"🔄 Аналізую [{chat_label}]{skill_label} з урахуванням контексту...",
             reply_markup=get_cancel_keyboard(0)  # Временный ID, обновим ниже
         )
     else:
         status_msg = await message.answer(
-            f"🔄 Аналізую [{chat_name}]{skill_label}, зачекайте...",
+            f"🔄 Аналізую [{chat_label}]{skill_label}, зачекайте...",
             reply_markup=get_cancel_keyboard(0)  # Временный ID, обновим ниже
         )
 
@@ -671,7 +812,7 @@ async def handle_query(message: Message, state: FSMContext):
     async def update_status(new_status: str):
         try:
             await status_msg.edit_text(
-                f"🔄 [{chat_name}]{skill_label}\n{new_status}",
+                f"🔄 [{chat_label}]{skill_label}\n{new_status}",
                 reply_markup=cancel_keyboard
             )
         except TelegramBadRequest:
@@ -679,7 +820,10 @@ async def handle_query(message: Message, state: FSMContext):
 
     try:
         # Запрос к Claude API
-        report = await ask_claude_api(user_query, history, current_db, status_msg.message_id, update_status)
+        report = await ask_claude_api(
+            user_query, history, current_db, status_msg.message_id, update_status,
+            multi_db_list=multi_db_list
+        )
 
         # Увеличиваем счётчик использования после успешного запроса
         increment_usage(user_id)
