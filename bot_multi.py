@@ -127,7 +127,7 @@ DB_ROOT = Path("databases")
 PROMPTS_DIR = Path("prompts")
 
 # Модель Claude
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-5"
 
 # Anthropic клиент
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
