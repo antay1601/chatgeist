@@ -1,0 +1,25 @@
+# /etc/systemd/system/chatgeist-mcp.service
+# MCP-сервер баз чатов по HTTP. Слушает только 127.0.0.1, наружу через nginx.
+[Unit]
+Description=ChatGeist MCP server (read-only chat databases)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/chatgeist
+# MCP_HTTP_TOKEN, MCP_PUBLIC_HOST, при необходимости MCP_HTTP_PORT
+EnvironmentFile=/etc/chatgeist-mcp.env
+ExecStart=/home/bot/.local/bin/uv run --quiet --script mcp_db_server.py --http
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# uv держит кэш и окружение скрипта в домашнем каталоге
+ReadWritePaths=-/home/bot/.cache -/home/bot/.local/share/uv
+
+[Install]
+WantedBy=multi-user.target

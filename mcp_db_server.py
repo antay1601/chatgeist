@@ -5,8 +5,15 @@
 """
 MCP сервер для read-only доступа к базам чатов в databases/.
 
-Запуск (Claude Code подхватывает из .mcp.json):
+Локально (stdio, Claude Code подхватывает из .mcp.json):
     uv run --script mcp_db_server.py
+
+Удалённо (streamable HTTP на 127.0.0.1, наружу только через HTTPS-прокси):
+    MCP_HTTP_TOKEN=... MCP_PUBLIC_HOST=mcp.example.com uv run --script mcp_db_server.py --http
+
+    MCP_HTTP_TOKEN   обязателен; клиент шлёт Authorization: Bearer <токен>
+    MCP_PUBLIC_HOST  домен, с которым приходит заголовок Host от прокси
+    MCP_HTTP_PORT    порт на 127.0.0.1 (по умолчанию 8766)
 
 Безопасность (опирается на сам SQLite, а не на фильтр подстрок):
 - Соединение открывается в режиме mode=ro + PRAGMA query_only
@@ -14,19 +21,40 @@ MCP сервер для read-only доступа к базам чатов в dat
 - Таймаут выполнения запроса и лимит строк в ответе
 """
 
+import hmac
 import json
+import os
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 DB_ROOT = (Path(__file__).resolve().parent / "databases").resolve()
 QUERY_TIMEOUT_SEC = 30
 MAX_ROWS = 500
 
-mcp = FastMCP("chatgeist-db")
+HTTP_PORT = int(os.environ.get("MCP_HTTP_PORT", "8766"))
+PUBLIC_HOST = os.environ.get("MCP_PUBLIC_HOST", "").strip()
+
+# Защита от DNS rebinding: Host должен быть локальным или публичным доменом прокси
+_local_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_local_origins = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+
+mcp = FastMCP(
+    "chatgeist-db",
+    host="127.0.0.1",
+    port=HTTP_PORT,
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_local_hosts + ([PUBLIC_HOST] if PUBLIC_HOST else []),
+        allowed_origins=_local_origins + ([f"https://{PUBLIC_HOST}"] if PUBLIC_HOST else []),
+    ),
+)
 
 ALLOWED_ACTIONS = {
     sqlite3.SQLITE_SELECT,
@@ -118,5 +146,42 @@ def query(database: str, sql: str, max_rows: int = 100) -> str:
     )
 
 
+class BearerAuth:
+    """ASGI-обёртка: пропускает только запросы с верным Authorization: Bearer."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            given = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(given, self.expected):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": b'{"error": "unauthorized"}'})
+                return
+        await self.app(scope, receive, send)
+
+
+def _run_http() -> None:
+    import uvicorn
+
+    token = os.environ.get("MCP_HTTP_TOKEN", "")
+    if len(token) < 32:
+        sys.exit("MCP_HTTP_TOKEN не задан или короче 32 символов: без токена HTTP-режим не запускается")
+    app = BearerAuth(mcp.streamable_http_app(), token)
+    uvicorn.run(app, host="127.0.0.1", port=HTTP_PORT, log_level="info")
+
+
 if __name__ == "__main__":
-    mcp.run()
+    if "--http" in sys.argv[1:]:
+        _run_http()
+    else:
+        mcp.run()

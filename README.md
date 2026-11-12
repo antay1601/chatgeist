@@ -205,6 +205,8 @@ docker compose down && docker compose up -d
 
 Запись, DDL, ATTACH и PRAGMA блокируются авторизатором SQLite. Есть таймаут 30 с и лимит 500 строк.
 
+Удалённый доступ по HTTPS: `mcp_db_server.py --http` (токен в `MCP_HTTP_TOKEN`, домен в `MCP_PUBLIC_HOST`). Установка на сервере описана в `SERVER_OPS.md`, файлы сервиса и прокси лежат в `deploy/`.
+
 ## Лицензия
 
 MIT
