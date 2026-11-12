@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "chatgeist-db": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--script", "mcp_db_server.py"]
+    }
+  }
+}

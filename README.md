@@ -142,6 +142,8 @@ chatgeist/
 ├── update_manager.py         # Оркестратор обновлений
 ├── tg_dump_with_reactions.py # Дампер истории Telegram
 ├── jsonl_to_sqlite.py        # Конвертер JSONL → SQLite
+├── mcp_db_server.py          # MCP сервер: read-only SQL к databases/
+├── .mcp.json                 # Подключение MCP для Claude Code
 ├── targets.json              # Конфигурация чатов
 ├── docker-compose.yml        # Docker конфигурация
 ├── Dockerfile.claude-sandbox # Docker образ для Claude
@@ -191,6 +193,17 @@ security find-generic-password -s "Claude Code-credentials" -w | \
 # Обновить в .env и перезапустить Docker
 docker compose down && docker compose up -d
 ```
+
+## MCP для работы с базами
+
+`mcp_db_server.py` даёт Claude Code read-only доступ к базам в `databases/`. Он подключается автоматически через `.mcp.json` при запуске `claude` в корне проекта (при первом запуске нужно одобрить сервер).
+
+Инструменты:
+- `list_databases`: базы, их размер и число сообщений
+- `get_schema(database)`: схема базы
+- `query(database, sql, max_rows)`: SELECT/WITH, в том числе FTS5 (`messages_fts MATCH '...'`)
+
+Запись, DDL, ATTACH и PRAGMA блокируются авторизатором SQLite. Есть таймаут 30 с и лимит 500 строк.
 
 ## Лицензия
 
