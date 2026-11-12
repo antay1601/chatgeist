@@ -159,7 +159,7 @@ git commit -m "feat: описание изменений"
 git push origin main
 
 # 2. На сервере (или через SSH)
-ssh -i ~/.ssh/id_hoodyalko_dev root@104.248.18.118
+ssh -i ~/.ssh/id_ed25519_remote root@64.227.118.253
 
 # 3. Обновить код
 cd /home/bot/chatgeist
@@ -169,7 +169,7 @@ sudo -u bot git pull origin main
 systemctl restart chatgeist-bot.service
 
 # 5. Проверить логи
-tail -f /home/bot/chatgeist/bot.log
+journalctl -u chatgeist-bot -f
 ```
 
 ### Управление ботом на сервере
@@ -182,7 +182,7 @@ systemctl status chatgeist-bot.service
 systemctl restart chatgeist-bot.service
 
 # Логи
-tail -f /home/bot/chatgeist/bot.log
+journalctl -u chatgeist-bot -f
 
 # Логи через journalctl
 journalctl -u chatgeist-bot.service -f

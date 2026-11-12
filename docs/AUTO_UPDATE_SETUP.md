@@ -1,6 +1,6 @@
 # Автоматическое обновление ChatGeist
 
-Обновлено: 2026-02-07
+Обновлено: 2026-11-12
 
 ## Архитектура
 
@@ -15,15 +15,9 @@
 
 ## Что настроено
 
-### 1. Автообновление историй чатов (Mac)
+### Автообновление историй чатов (сервер)
 
-**Агент:** `com.chatgeist.update`
-**Интервал:** каждый час
-**Файл:** `~/Library/LaunchAgents/com.chatgeist.update.plist`
-
-Запускает `update_manager.py` для инкрементального обновления всех чатов из `targets.json`.
-
-### 2. Автообновление историй чатов (Сервер)
+Обновление идёт **только на сервере**. Агент `com.chatgeist.update` на Mac отключён 2026-11-12: одна и та же Telethon-сессия не должна использоваться одновременно в двух местах.
 
 **Механизм:** cron
 **Интервал:** каждые 4 часа
@@ -41,39 +35,11 @@
 | `.env` | API ключи (TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY) |
 | `logs/update.log` | Лог обновления чатов |
 
-## Команды управления (Mac)
-
-```bash
-# Статус агента
-launchctl list | grep chatgeist
-
-# Принудительный запуск
-launchctl start com.chatgeist.update
-
-# Остановить/Запустить
-launchctl unload ~/Library/LaunchAgents/com.chatgeist.update.plist
-launchctl load ~/Library/LaunchAgents/com.chatgeist.update.plist
-
-# Логи
-tail -f logs/update.log
-```
-
-## Запуск бота локально
-
-```bash
-uv run bot_multi.py
-```
-
-Или в фоне:
-```bash
-nohup uv run bot_multi.py > logs/bot.log 2>&1 &
-```
-
 ---
 
 # Настройка на сервере Ubuntu
 
-**Сервер:** 104.248.18.118 (hoodyalko-dev-2)
+**Сервер:** 64.227.118.253 (hermes-bot)
 **Пользователь:** bot
 **Путь:** `/home/bot/chatgeist`
 
@@ -97,7 +63,7 @@ journalctl -u chatgeist-bot -f
 
 ```bash
 # SSH подключение
-ssh -i ~/.ssh/id_hoodyalko_dev root@104.248.18.118
+ssh -i ~/.ssh/id_ed25519_remote root@64.227.118.253
 
 # Проверить crontab
 crontab -l

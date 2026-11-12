@@ -2,34 +2,31 @@
 
 ## Данные сервера
 
-- **IP:** 104.248.18.118
-- **SSH:** `ssh -i ~/.ssh/id_hoodyalko_dev root@104.248.18.118`
+- **IP:** 64.227.118.253 (hermes-bot)
+- **SSH:** `ssh -i ~/.ssh/id_ed25519_remote root@64.227.118.253`
 - **Путь к проекту:** `/home/bot/chatgeist`
 - **Пользователь бота:** `bot`
+- **Бот:** systemd-сервис `chatgeist-bot` (Anthropic API напрямую)
+- **Обновление чатов:** cron пользователя `bot`, каждые 4 часа
+
+Бот и обновление чатов должны работать **только здесь**. Тот же токен бота в другом месте даёт `Conflict: terminated by other getUpdates request`, та же Telethon-сессия — `AUTH_KEY_DUPLICATED`.
+
+Старый сервер 104.248.18.118 выведен из эксплуатации 2026-11-12.
 
 ---
 
 ## После перезагрузки сервера
 
-Все сервисы настроены на автозапуск. Проверь статус:
+Бот и cron стартуют автоматически. Проверить:
 
 ```bash
-ssh -i ~/.ssh/id_hoodyalko_dev root@104.248.18.118
-
-# Проверить Docker
-docker ps | grep claude-sandbox
-
-# Проверить бота
 systemctl status chatgeist-bot
+crontab -u bot -l
 ```
 
-Если что-то не запустилось:
+Если бот не запустился:
 
 ```bash
-# Запустить Docker
-cd /home/bot/chatgeist && docker compose up -d
-
-# Запустить бота
 systemctl start chatgeist-bot
 ```
 
@@ -37,26 +34,14 @@ systemctl start chatgeist-bot
 
 ## Проверка работоспособности
 
-### Claude в контейнере
-
-```bash
-docker exec claude-sandbox claude --print "скажи OK"
-```
-
-Ожидаемый ответ: `OK`
-
-### Бот
-
 ```bash
 systemctl status chatgeist-bot
 journalctl -u chatgeist-bot -n 20 --no-pager
 ```
 
-Ожидаемый статус: `active (running)`
+Ожидаемый статус: `active (running)`. Ошибки `Bad Gateway`, `Request timeout` и `Flood control` от Telegram — временные, бот переподключается сам.
 
-### Тест в Telegram
-
-Напиши боту @bestchatanalyzer_bot команду `/chats`
+Тест в Telegram: напиши боту @bestchatanalyzer_bot команду `/chats`.
 
 ---
 
@@ -65,67 +50,24 @@ journalctl -u chatgeist-bot -n 20 --no-pager
 ### Бот не отвечает
 
 ```bash
-# Проверить статус
 systemctl status chatgeist-bot
-
-# Посмотреть логи
 journalctl -u chatgeist-bot -n 50 --no-pager
-
-# Перезапустить
 systemctl restart chatgeist-bot
-```
-
-### "Invalid API key" или "OAuth token expired"
-
-Токен действителен 1 год (до декабря 2026). Если истёк:
-
-```bash
-# Получить новый токен
-docker exec -it claude-sandbox claude setup-token
-
-# Скопировать токен и обновить .env
-nano /home/bot/chatgeist/.env
-# Заменить CLAUDE_CODE_OAUTH_TOKEN=новый_токен
-
-# Перезапустить
-docker compose restart claude-sandbox
-systemctl restart chatgeist-bot
-```
-
-### Docker контейнер не запускается
-
-```bash
-cd /home/bot/chatgeist
-
-# Посмотреть логи
-docker logs claude-sandbox
-
-# Пересобрать если нужно
-docker compose down
-docker compose build --no-cache
-docker compose up -d
 ```
 
 ### "Conflict: terminated by other getUpdates request"
 
-Бот уже запущен где-то ещё (на Mac или другом сервере).
+Бот запущен где-то ещё. Найти и остановить второй экземпляр, затем:
 
 ```bash
-# Остановить локально (на Mac)
-pkill -f "bot_multi\|bot_anthropic"
-
-# Подождать 30 секунд и перезапустить на сервере
 systemctl restart chatgeist-bot
 ```
 
-### База данных не найдена
+### База данных не найдена / устарела
 
 ```bash
-# Проверить наличие БД
 ls -la /home/bot/chatgeist/databases/
-
-# Проверить что Docker видит
-docker exec claude-sandbox ls -la /workspace/dbs/
+tail -20 /home/bot/chatgeist/logs/update.log
 ```
 
 ---
@@ -134,17 +76,7 @@ docker exec claude-sandbox ls -la /workspace/dbs/
 
 ```bash
 cd /home/bot/chatgeist
-
-# Получить обновления
-git pull
-
-# Перезапустить бота
-systemctl restart chatgeist-bot
-
-# Если изменился Dockerfile
-docker compose down
-docker compose build
-docker compose up -d
+sudo -u bot git pull origin main
 systemctl restart chatgeist-bot
 ```
 
@@ -162,40 +94,19 @@ sudo -u bot /home/bot/.local/bin/uv run python update_manager.py
 sudo -u bot /home/bot/.local/bin/uv run python update_manager.py --chat alias_name
 ```
 
+Список чатов — `targets.json`.
+
 ---
 
 ## Логи
 
 ```bash
-# Логи бота
+# Бот
 journalctl -u chatgeist-bot -f
-
-# Логи Docker
-docker logs claude-sandbox -f
-
-# Логи за последний час
 journalctl -u chatgeist-bot --since "1 hour ago"
-```
 
----
-
-## Полный перезапуск всего
-
-```bash
-cd /home/bot/chatgeist
-
-# Остановить всё
-systemctl stop chatgeist-bot
-docker compose down
-
-# Запустить всё
-docker compose up -d
-sleep 5
-systemctl start chatgeist-bot
-
-# Проверить
-docker exec claude-sandbox claude --print "OK"
-systemctl status chatgeist-bot
+# Обновление чатов
+tail -f /home/bot/chatgeist/logs/update.log
 ```
 
 ---
